@@ -20,26 +20,29 @@ st.set_page_config(
 # === STYLING ===
 st.markdown("""
     <style>
+    /* VS Code Terminal Theme */
     .terminal-box {
-        background-color: #0e1117;
-        color: #ffb000; /* CHANGED: Soft White for better readability */
-        font-family: 'Courier New', Courier, monospace;
-        padding: 15px;
-        border: 1px solid #333;
-        border-radius: 5px;
+        background-color: #1e1e1e; /* VS Code Background */
+        color: #cccccc;            /* Default Text */
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        padding: 10px;
+        border: 1px solid #3c3c3c;
+        border-radius: 4px;
         height: 600px;
         overflow-y: auto;
-        font-size: 13px; /* Slightly larger text */
-        line-height: 1.5; /* Better spacing between lines */
-        white-space: pre-wrap;
+        font-size: 14px;           /* Larger Font */
+        line-height: 1.5;
     }
-    .stMetric {
-        background-color: #1e1e1e;
-        padding: 15px;
-        border-radius: 8px;
-        border-left: 4px solid #00ff41;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    .log-line {
+        display: block;            /* Forces each log to its own line */
+        padding: 1px 0;
+        border-bottom: 1px solid #2d2d2d; /* Subtle separator line */
     }
+    .log-ts { color: #6a9955; }    /* VS Code Comment Green for Dates */
+    .log-info { color: #569cd6; font-weight: bold; } /* VS Code Blue */
+    .log-warn { color: #cca700; font-weight: bold; } /* Yellow */
+    .log-err { color: #f44747; font-weight: bold; }  /* Red */
+    .log-ticker { color: #c586c0; font-weight: bold;} /* Purple for Tickers */
     </style>
 """, unsafe_allow_html=True)
 
@@ -186,8 +189,13 @@ def calculate_advanced_metrics(hist_df):
     df['daily_return'] = df['equity'].pct_change()
     
     # --- 1. RETURN & RISK ---
-    days = (df['timestamp'].max() - df['timestamp'].min()).days
+    # UPDATE: Force strict start date for CAGR time calculation
+    start_date = pd.Timestamp("2025-05-24")
+    current_date = df['timestamp'].max()
+    
+    days = (current_date - start_date).days
     if days < 1: days = 1
+    
     total_return = (df['equity'].iloc[-1] - df['equity'].iloc[0]) / df['equity'].iloc[0]
     cagr = ((1 + total_return) ** (365 / days)) - 1
     
@@ -282,18 +290,21 @@ def calculate_institutional_score(metrics):
 
 def calculate_future_projections(hist_df, current_equity):
     """
-    Projects equity based on current CAGR for:
-    1. End of every month for the next 12 months.
-    2. End of the specific current month for the next 10 years.
+    Projects equity based on current CAGR (anchored to May 24, 2025).
     """
-    if hist_df.empty: return pd.DataFrame()
+    if hist_df.empty: return pd.DataFrame(), 0.0
     
     # 1. Calculate Current CAGR (The Engine)
     df = hist_df.copy()
-    days_trading = (df['timestamp'].max() - df['timestamp'].min()).days
+    
+    # UPDATE: Strict Start Date
+    start_date = pd.Timestamp("2025-05-24")
+    current_date = df['timestamp'].max()
+    
+    days_trading = (current_date - start_date).days
     if days_trading < 1: days_trading = 1
     
-    # Total return based on official start date vs current live equity
+    # Total return based on filtered start equity vs current live equity
     start_equity = df['equity'].iloc[0]
     total_return = (current_equity - start_equity) / start_equity
     
@@ -304,22 +315,17 @@ def calculate_future_projections(hist_df, current_equity):
     today = pd.Timestamp.now().normalize()
     target_dates = []
     
-    # A. Monthly: End of month for next 12 months (e.g., Feb 26, Mar 26... Feb 27)
-    # We use MonthEnd offset to always get the last day
+    # A. Monthly: End of month for next 12 months
     for i in range(0, 13): 
         future_date = today + pd.tseries.offsets.MonthEnd(i)
-        # If we are already past the month end (rare edge case), skip
         if future_date < today: 
             future_date = today + pd.tseries.offsets.MonthEnd(i+1)
         target_dates.append(future_date)
         
-    # B. Yearly: End of [Current Month] for next 10 years (e.g., Feb 28, Feb 29...)
-    # We start from year 2 because year 1 is covered by the monthly loop above
+    # B. Yearly: End of [Current Month] for next 10 years
     current_month_index = today.month 
     for i in range(2, 11): 
-        # Calculate future year
         future_year = today.year + i
-        # Create timestamp for 1st of that month, then add MonthEnd
         future_dt = pd.Timestamp(year=future_year, month=current_month_index, day=1) + pd.tseries.offsets.MonthEnd(0)
         target_dates.append(future_dt)
 
@@ -329,7 +335,7 @@ def calculate_future_projections(hist_df, current_equity):
     # 3. Calculate Projections
     projections = []
     for date in target_dates:
-        # Calculate years from NOW
+        # Calculate years from NOW (using 365.25 for leap year precision)
         years_future = (date - today).days / 365.25
         
         # Future Value Formula: PV * (1+r)^t
@@ -343,7 +349,31 @@ def calculate_future_projections(hist_df, current_equity):
         
     return pd.DataFrame(projections), cagr
 
+def format_log_line(line):
+    """Formats a single log line to look like VS Code syntax highlighting."""
+    # 1. Safety escape for HTML
+    clean_line = line.replace("<", "&lt;").replace(">", "&gt;")
+    
+    # 2. Colorize Timestamps (e.g., 2026-02-07 09:11:52)
+    clean_line = re.sub(
+        r'(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})', 
+        r'<span class="log-ts">\1</span>', 
+        clean_line
+    )
+    
+    # 3. Colorize Tags ([INFO], [ERROR], etc.)
+    clean_line = clean_line.replace("[INFO]", '<span class="log-info">[INFO]</span>')
+    clean_line = clean_line.replace("[WARNING]", '<span class="log-warn">[WARNING]</span>')
+    clean_line = clean_line.replace("[ERROR]", '<span class="log-err">[ERROR]</span>')
+    
+    # 4. Colorize Tickers (e.g., [AAPL])
+    clean_line = re.sub(
+        r'\[([A-Z]{2,5})\]', 
+        r'<span class="log-ticker">[\1]</span>', 
+        clean_line
+    )
 
+    return f'<div class="log-line">{clean_line}</div>'
 
 # === DASHBOARD LOGIC ===
 api = init_alpaca()
@@ -471,7 +501,21 @@ with tab1:
 
 with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
-    st.markdown(f'<div class="terminal-box">{"".join(logs)}</div>', unsafe_allow_html=True)
+    
+    if logs:
+        # 1. Slice to get only the last 50 lines
+        recent_logs = logs[-50:] 
+        
+        # 2. Apply the VS Code formatting to each line
+        formatted_logs = [format_log_line(line) for line in recent_logs]
+        
+        # 3. Join them (the CSS .log-line handle the breaks now)
+        log_html = "".join(formatted_logs)
+        
+        # 4. Render
+        st.markdown(f'<div class="terminal-box">{log_html}</div>', unsafe_allow_html=True)
+    else:
+        st.write("No logs found.")
 
 with tab3:
     hist_df = get_portfolio_history(api)
@@ -528,7 +572,7 @@ with tab3:
                 st.markdown("<div style='text-align: center; color: #ff4b4b; font-weight: bold;'>🎲 DEGEN / RETAIL</div>", unsafe_allow_html=True)
 
         with col_scorecard:
-            st.markdown("### 📊 Metrics Breakdown")
+            st.markdown("### 📊 Metrics Breakdown - Since 24 May 2025")
             st.dataframe(
                 scorecard_df,
                 use_container_width=True,
