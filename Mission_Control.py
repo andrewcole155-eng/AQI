@@ -177,66 +177,83 @@ def calculate_daily_returns(df):
     df['color'] = df['daily_return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b')
     return df
 
-def calculate_advanced_metrics(hist_df):
-    """Calculates metrics using Trade-Proxy Resampling (3-Day Blocks)."""
+def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500):
+    """Calculates metrics adjusted for Position Sizing (Strategy View vs Portfolio View)."""
     if hist_df.empty: return {}
     
-    # 1. Base Data
+    # 1. Determine Allocation Ratio (Position Sizing impact)
+    # If equity is $4200 and trade is $500, ratio is ~0.12
+    # We use this to "Gross Up" the returns to see pure Strategy performance
+    if current_equity > 0:
+        allocation_ratio = investment_amount / current_equity
+    else:
+        allocation_ratio = 1.0 # Fallback
+        
+    # Cap ratio to avoid divide-by-zero or massive multipliers on tiny accounts
+    allocation_ratio = max(0.05, min(1.0, allocation_ratio))
+    
+    # Prepare data
     df = hist_df.copy()
     df['daily_return'] = df['equity'].pct_change()
     
-    # --- THE FIX: RESAMPLE TO TRADE FREQUENCY ---
-    # Since your Avg Hold is ~3.3 days, we group 3 days of returns into one "Trade Block"
-    # This aligns the bot's math with your manual "Per Trade" math.
-    trade_proxy_df = df.set_index('timestamp')['equity'].resample('3D').last().pct_change().dropna()
+    # --- TRADE BASIS SIMULATION ---
+    # We scale the portfolio daily returns UP by the allocation ratio
+    # This simulates what the return would be if 100% of equity was in the trade
+    df['trade_basis_return'] = df['daily_return'] / allocation_ratio
     
-    # 2. RAW SQN (Trade Proxy)
-    # Now we calculate SQN on these 3-day blocks, not single days
-    trade_mean = trade_proxy_df.mean()
-    trade_std = trade_proxy_df.std()
-    trade_count = len(trade_proxy_df)
+    # Filter for Significant Moves (Trade Days) using the Scaled Return
+    # Threshold: 0.5% move on the *Trade* basis
+    active_trade_df = df[abs(df['trade_basis_return']) > 0.005].copy()
     
-    if trade_std > 0 and trade_count > 0:
-        sqn_raw = (trade_mean / trade_std) * (trade_count ** 0.5)
+    # --- 1. SQN (Trade Basis) ---
+    if not active_trade_df.empty:
+        trade_mean = active_trade_df['trade_basis_return'].mean()
+        trade_std = active_trade_df['trade_basis_return'].std()
+        trade_count = len(active_trade_df)
+        
+        # Van Tharp SQN: (Mean / Std) * Sqrt(N)
+        if trade_std > 0:
+            sqn_trade = (trade_mean / trade_std) * (trade_count ** 0.5)
+        else:
+            sqn_trade = 0
     else:
-        sqn_raw = 0
+        sqn_trade = 0
+        trade_mean = 0
+        trade_std = 0
 
-    # --- STANDARD DAILY METRICS (Keep for Institutional comparison) ---
-    daily_mean = df['daily_return'].mean()
-    daily_std = df['daily_return'].std()
-    
-    # Sharpe (Daily)
-    sharpe = (daily_mean / daily_std) * (252 ** 0.5) if daily_std > 0 else 0
-    
-    # Sortino
-    downside_std = df[df['daily_return'] < 0]['daily_return'].std()
-    sortino = (daily_mean / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
-    
-    # CAGR
+    # --- PORTFOLIO METRICS (Standard) ---
     days = (df['timestamp'].max() - df['timestamp'].min()).days
     if days < 1: days = 1
     total_return = (df['equity'].iloc[-1] - df['equity'].iloc[0]) / df['equity'].iloc[0]
     cagr = ((1 + total_return) ** (365 / days)) - 1
     
-    # Drawdown
     df['peak'] = df['equity'].cummax()
-    max_dd = ((df['equity'] - df['peak']) / df['peak']).min()
+    df['dd'] = (df['equity'] - df['peak']) / df['peak']
+    max_dd = df['dd'].min()
+    
+    mean_ret = df['daily_return'].mean()
+    std_ret = df['daily_return'].std()
+    sharpe = (mean_ret / std_ret) * (252 ** 0.5) if std_ret > 0 else 0
+    
+    downside_std = df[df['daily_return'] < 0]['daily_return'].std()
+    sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
+    
     mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
 
-    # Advanced Stats
+    # Profit Factor
     df['diff'] = df['equity'].diff()
     gross_profit = df[df['diff'] > 0]['diff'].sum()
     gross_loss = abs(df[df['diff'] < 0]['diff'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    # Win Rate (on Trade Proxy blocks)
-    wins = len(trade_proxy_df[trade_proxy_df > 0])
-    total_trades = len(trade_proxy_df)
-    win_rate = (wins / total_trades) if total_trades > 0 else 0
+    # Win Rate (on Active Trade Days)
+    wins = len(active_trade_df[active_trade_df['trade_basis_return'] > 0])
+    total_active = len(active_trade_df)
+    win_rate = (wins / total_active) if total_active > 0 else 0
 
-    # Kelly (on Trade Proxy blocks)
-    avg_win = trade_proxy_df[trade_proxy_df > 0].mean() if wins > 0 else 0
-    avg_loss = abs(trade_proxy_df[trade_proxy_df < 0].mean()) if (total_trades - wins) > 0 else 0
+    # Kelly
+    avg_win = active_trade_df[active_trade_df['trade_basis_return'] > 0]['trade_basis_return'].mean() if wins > 0 else 0
+    avg_loss = abs(active_trade_df[active_trade_df['trade_basis_return'] < 0]['trade_basis_return'].mean()) if (total_active - wins) > 0 else 0
     risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
     
     if risk_reward > 0:
@@ -251,36 +268,35 @@ def calculate_advanced_metrics(hist_df):
         "Sortino Ratio": sortino,
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
-        "SQN (Trade Proxy)": sqn_raw,     # The new fixed metric
+        
+        # New "Grossed Up" Metrics
+        "SQN (Strategy)": sqn_trade, 
+        "Est. Trade Return": trade_mean,
+        "Est. Trade StdDev": trade_std, 
+        
         "Win Rate (Est)": win_rate,
-        "Risk:Reward": risk_reward,
         "Kelly Criterion": max(0.0, kelly),
-        "Avg Trade Return": trade_mean,   # Added for debugging
-        "Std Dev (Trade)": trade_std      # Added for debugging
+        "Leverage Ratio": allocation_ratio # For debugging display
     }
 
 def create_scorecard_df(metrics):
-    """Formats metrics including Trade Proxy SQN."""
+    """Formats metrics including Position-Adjusted Stats."""
     
-    sqn = metrics['SQN (Trade Proxy)']
+    sqn = metrics['SQN (Strategy)']
     if sqn > 7.0: sqn_verdict = "🦄 Holy Grail"
     elif sqn > 3.0: sqn_verdict = "🚀 Strong"
     elif sqn > 1.7: sqn_verdict = "✅ Good"
     else: sqn_verdict = "😐 Average"
 
     data = [
-        # --- RETURN & RISK ---
-        {"METRIC": "CAGR (Est.)", "YOURS": f"{metrics['CAGR']:.1%}", "BENCHMARK": "> 20%", "VERDICT": "🏆 Elite" if metrics['CAGR'] > 0.2 else "😐 Std"},
+        # --- RETURN & RISK (Portfolio View) ---
+        {"METRIC": "CAGR (Account)", "YOURS": f"{metrics['CAGR']:.1%}", "BENCHMARK": "> 20%", "VERDICT": "🏆 Elite" if metrics['CAGR'] > 0.2 else "😐 Std"},
         {"METRIC": "Max Drawdown", "YOURS": f"{metrics['Max Drawdown']:.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics['Max Drawdown']) < 0.15 else "⚠️ High Risk"},
-        
-        # --- EFFICIENCY ---
-        {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics['Sharpe Ratio']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics['Sharpe Ratio'] > 1.5 else "😐 Std"},
         {"METRIC": "MAR Ratio", "YOURS": f"{metrics['MAR Ratio']:.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics['MAR Ratio'] > 1.0 else "😐 Std"},
         
-        # --- TRADE METRICS (Resampled 3D) ---
-        {"METRIC": "SQN (Trade Proxy)", "YOURS": f"{metrics['SQN (Trade Proxy)']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
-        {"METRIC": "Avg Return (3D)", "YOURS": f"{metrics['Avg Trade Return']:.2%}", "BENCHMARK": "> 1.0%", "VERDICT": "ℹ️ Info"},
-        {"METRIC": "Std Dev (3D)", "YOURS": f"{metrics['Std Dev (Trade)']:.2%}", "BENCHMARK": "Target 3.28%", "VERDICT": "ℹ️ Info"},
+        # --- STRATEGY PERFORMANCE (Trade View) ---
+        {"METRIC": "SQN (Strategy)", "YOURS": f"{metrics['SQN (Strategy)']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
+        {"METRIC": "Est. Trade Vol", "YOURS": f"{metrics['Est. Trade StdDev']:.2%}", "BENCHMARK": "~3.28%", "VERDICT": "🎯 Target"},
         
         {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
         {"METRIC": "Est. Win Rate", "YOURS": f"{metrics['Win Rate (Est)']:.0%}", "BENCHMARK": "50-60%", "VERDICT": "✅ Stable" if metrics['Win Rate (Est)'] > 0.5 else "🔻 Low"},
@@ -485,16 +501,19 @@ with tab3:
     hist_df = get_portfolio_history(api)
     
     if not hist_df.empty and account:
+        # Get Equity for Leverage Calculation
+        current_equity = float(account['equity'])
+        
         # --- CALCULATIONS ---
-        metrics = calculate_advanced_metrics(hist_df)
+        # PASSING 500 AS INVESTMENT AMOUNT TO FIX POSITION SIZING SKEW
+        metrics = calculate_advanced_metrics(hist_df, current_equity=current_equity, investment_amount=500)
+        
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
-        
-        current_equity = float(account['equity'])
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
 
-        # --- SECTION 1: THE INSTITUTIONAL SCORECARD ---
-        st.markdown("### 🏆 Strategy Scorecard")
+        # --- SECTION 1: THE SCORECARD ---
+        st.markdown(f"### 🏆 Strategy Scorecard (Adj. for {metrics['Leverage Ratio']:.1%} Allocation)")
         st.dataframe(
             scorecard_df,
             use_container_width=True,
