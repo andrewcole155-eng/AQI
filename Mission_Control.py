@@ -178,109 +178,95 @@ def calculate_daily_returns(df):
     return df
 
 def calculate_advanced_metrics(hist_df):
-    """Calculates metrics using Percentage-Based SQN (Raw)."""
+    """Calculates metrics using Trade-Proxy Resampling (3-Day Blocks)."""
     if hist_df.empty: return {}
     
-    # Prepare data
+    # 1. Base Data
     df = hist_df.copy()
     df['daily_return'] = df['equity'].pct_change()
-    df['daily_pl_abs'] = df['equity'].diff()
     
-    # --- 1. NORMALIZED SQN (All Days) ---
-    mean_ret = df['daily_return'].mean()
-    std_ret = df['daily_return'].std()
-    total_days = len(df) - 1
+    # --- THE FIX: RESAMPLE TO TRADE FREQUENCY ---
+    # Since your Avg Hold is ~3.3 days, we group 3 days of returns into one "Trade Block"
+    # This aligns the bot's math with your manual "Per Trade" math.
+    trade_proxy_df = df.set_index('timestamp')['equity'].resample('3D').last().pct_change().dropna()
     
-    if std_ret > 0 and total_days > 0:
-        sqn_norm = (mean_ret / std_ret) * (total_days ** 0.5)
-    else:
-        sqn_norm = 0
-        
-    # --- 2. RAW SQN (Percentage - Active Moves Only) ---
-    # Reverted to Percentage as requested.
-    # Filter: Only count days with > 0.2% move to simulate "Trades" vs "Holding"
-    active_pct_df = df[abs(df['daily_return']) > 0.002].copy()
+    # 2. RAW SQN (Trade Proxy)
+    # Now we calculate SQN on these 3-day blocks, not single days
+    trade_mean = trade_proxy_df.mean()
+    trade_std = trade_proxy_df.std()
+    trade_count = len(trade_proxy_df)
     
-    if not active_pct_df.empty:
-        active_mean = active_pct_df['daily_return'].mean()
-        active_std = active_pct_df['daily_return'].std()
-        active_count = len(active_pct_df)
-        
-        # SQN = (Average % Return / StdDev of % Return) * Sqrt(Count)
-        if active_std > 0:
-            sqn_raw = (active_mean / active_std) * (active_count ** 0.5)
-        else:
-            sqn_raw = 0
+    if trade_std > 0 and trade_count > 0:
+        sqn_raw = (trade_mean / trade_std) * (trade_count ** 0.5)
     else:
         sqn_raw = 0
 
-    # --- BASIC METRICS ---
+    # --- STANDARD DAILY METRICS (Keep for Institutional comparison) ---
+    daily_mean = df['daily_return'].mean()
+    daily_std = df['daily_return'].std()
+    
+    # Sharpe (Daily)
+    sharpe = (daily_mean / daily_std) * (252 ** 0.5) if daily_std > 0 else 0
+    
+    # Sortino
+    downside_std = df[df['daily_return'] < 0]['daily_return'].std()
+    sortino = (daily_mean / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
+    
+    # CAGR
     days = (df['timestamp'].max() - df['timestamp'].min()).days
     if days < 1: days = 1
     total_return = (df['equity'].iloc[-1] - df['equity'].iloc[0]) / df['equity'].iloc[0]
     cagr = ((1 + total_return) ** (365 / days)) - 1
     
+    # Drawdown
     df['peak'] = df['equity'].cummax()
-    df['dd'] = (df['equity'] - df['peak']) / df['peak']
-    max_dd = df['dd'].min()
-    
-    sharpe = (mean_ret / std_ret) * (252 ** 0.5) if std_ret > 0 else 0
-    
-    downside_std = df[df['daily_return'] < 0]['daily_return'].std()
-    sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
-    
+    max_dd = ((df['equity'] - df['peak']) / df['peak']).min()
     mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
 
-    # --- ADVANCED METRICS ---
-    gross_profit = df[df['daily_pl_abs'] > 0]['daily_pl_abs'].sum()
-    gross_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].sum())
+    # Advanced Stats
+    df['diff'] = df['equity'].diff()
+    gross_profit = df[df['diff'] > 0]['diff'].sum()
+    gross_loss = abs(df[df['diff'] < 0]['diff'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    # Kelly Logic (Use Active Percent Days)
-    wins = len(active_pct_df[active_pct_df['daily_return'] > 0])
-    total_active = len(active_pct_df)
-    win_rate_active = (wins / total_active) if total_active > 0 else 0
+    # Win Rate (on Trade Proxy blocks)
+    wins = len(trade_proxy_df[trade_proxy_df > 0])
+    total_trades = len(trade_proxy_df)
+    win_rate = (wins / total_trades) if total_trades > 0 else 0
 
-    avg_win = active_pct_df[active_pct_df['daily_return'] > 0]['daily_return'].mean() if wins > 0 else 0
-    avg_loss = abs(active_pct_df[active_pct_df['daily_return'] < 0]['daily_return'].mean()) if (total_active - wins) > 0 else 0
+    # Kelly (on Trade Proxy blocks)
+    avg_win = trade_proxy_df[trade_proxy_df > 0].mean() if wins > 0 else 0
+    avg_loss = abs(trade_proxy_df[trade_proxy_df < 0].mean()) if (total_trades - wins) > 0 else 0
     risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
-
+    
     if risk_reward > 0:
-        kelly = win_rate_active - ((1 - win_rate_active) / risk_reward)
+        kelly = win_rate - ((1 - win_rate) / risk_reward)
     else:
         kelly = 0
-    
-    kelly_pct = max(0.0, kelly)
 
     return {
         "CAGR": cagr,
         "Max Drawdown": max_dd,
         "Sharpe Ratio": sharpe,
         "Sortino Ratio": sortino,
-        "Win Rate (Active)": win_rate_active,
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
-        "SQN Norm": sqn_norm,
-        "SQN Raw": sqn_raw, # Now Percent Based
+        "SQN (Trade Proxy)": sqn_raw,     # The new fixed metric
+        "Win Rate (Est)": win_rate,
         "Risk:Reward": risk_reward,
-        "Kelly Criterion": kelly_pct
+        "Kelly Criterion": max(0.0, kelly),
+        "Avg Trade Return": trade_mean,   # Added for debugging
+        "Std Dev (Trade)": trade_std      # Added for debugging
     }
 
 def create_scorecard_df(metrics):
-    """Formats metrics including Percentage-Based SQN."""
+    """Formats metrics including Trade Proxy SQN."""
     
-    # Verdict Logic for SQN (Van Tharp Scale)
-    sqn_raw = metrics['SQN Raw']
-    if sqn_raw > 7.0: raw_verdict = "🦄 Holy Grail"
-    elif sqn_raw > 3.0: raw_verdict = "🚀 Strong"
-    elif sqn_raw > 1.7: raw_verdict = "✅ Good"
-    else: raw_verdict = "😐 Average"
-
-    # Verdict for Kelly
-    kelly = metrics['Kelly Criterion']
-    if kelly > 0.2: kelly_verdict = "🔥 Aggr."
-    elif kelly > 0.1: kelly_verdict = "✨ Ideal"
-    else: kelly_verdict = "🛡️ Safe"
+    sqn = metrics['SQN (Trade Proxy)']
+    if sqn > 7.0: sqn_verdict = "🦄 Holy Grail"
+    elif sqn > 3.0: sqn_verdict = "🚀 Strong"
+    elif sqn > 1.7: sqn_verdict = "✅ Good"
+    else: sqn_verdict = "😐 Average"
 
     data = [
         # --- RETURN & RISK ---
@@ -289,20 +275,16 @@ def create_scorecard_df(metrics):
         
         # --- EFFICIENCY ---
         {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics['Sharpe Ratio']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics['Sharpe Ratio'] > 1.5 else "😐 Std"},
-        {"METRIC": "Sortino Ratio", "YOURS": f"{metrics['Sortino Ratio']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "💎 Strong" if metrics['Sortino Ratio'] > 2.0 else "😐 Std"},
         {"METRIC": "MAR Ratio", "YOURS": f"{metrics['MAR Ratio']:.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics['MAR Ratio'] > 1.0 else "😐 Std"},
         
-        # --- ADVANCED STATS ---
+        # --- TRADE METRICS (Resampled 3D) ---
+        {"METRIC": "SQN (Trade Proxy)", "YOURS": f"{metrics['SQN (Trade Proxy)']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
+        {"METRIC": "Avg Return (3D)", "YOURS": f"{metrics['Avg Trade Return']:.2%}", "BENCHMARK": "> 1.0%", "VERDICT": "ℹ️ Info"},
+        {"METRIC": "Std Dev (3D)", "YOURS": f"{metrics['Std Dev (Trade)']:.2%}", "BENCHMARK": "Target 3.28%", "VERDICT": "ℹ️ Info"},
+        
         {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
-        
-        # DUAL SQN DISPLAY
-        {"METRIC": "SQN (Norm.)", "YOURS": f"{metrics['SQN Norm']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "✅ Good" if metrics['SQN Norm'] > 2.0 else "😐 Std"},
-        {"METRIC": "SQN (Raw %)", "YOURS": f"{metrics['SQN Raw']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": raw_verdict},
-        
-        {"METRIC": "Active Win Rate", "YOURS": f"{metrics['Win Rate (Active)']:.0%}", "BENCHMARK": "50-60%", "VERDICT": "✅ Stable" if metrics['Win Rate (Active)'] > 0.5 else "🔻 Low"},
-        
-        # --- MONEY MANAGEMENT ---
-        {"METRIC": "Kelly Criterion", "YOURS": f"{metrics['Kelly Criterion']:.1%}", "BENCHMARK": "10% - 20%", "VERDICT": kelly_verdict},
+        {"METRIC": "Est. Win Rate", "YOURS": f"{metrics['Win Rate (Est)']:.0%}", "BENCHMARK": "50-60%", "VERDICT": "✅ Stable" if metrics['Win Rate (Est)'] > 0.5 else "🔻 Low"},
+        {"METRIC": "Kelly Criterion", "YOURS": f"{metrics['Kelly Criterion']:.1%}", "BENCHMARK": "5% - 20%", "VERDICT": "🔥 Aggr." if metrics['Kelly Criterion'] > 0.15 else "🛡️ Safe"},
     ]
     return pd.DataFrame(data)
 
