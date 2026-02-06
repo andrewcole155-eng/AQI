@@ -177,7 +177,7 @@ def calculate_daily_returns(df):
     return df
 
 def calculate_advanced_metrics(hist_df):
-    """Calculates institutional metrics using Active Days for Raw SQN."""
+    """Calculates metrics with Dual SQN (Normal vs Raw)."""
     if hist_df.empty: return {}
     
     # Prepare data
@@ -185,10 +185,33 @@ def calculate_advanced_metrics(hist_df):
     df['daily_return'] = df['equity'].pct_change()
     df['daily_pl_abs'] = df['equity'].diff()
     
-    # --- FILTER FOR ACTIVE DAYS (Fixes SQN) ---
-    # We only count days where the equity actually moved (not flat/weekend/holidays)
-    active_df = df[abs(df['daily_return']) > 0.00001].copy()
+    # --- 1. NORMALIZED SQN (All Days) ---
+    mean_ret = df['daily_return'].mean()
+    std_ret = df['daily_return'].std()
+    total_days = len(df) - 1
     
+    if std_ret > 0 and total_days > 0:
+        sqn_norm = (mean_ret / std_ret) * (total_days ** 0.5)
+    else:
+        sqn_norm = 0
+        
+    # --- 2. RAW SQN (Active Moves Only) ---
+    # FILTER: Only count days where equity moved more than 0.1%
+    # This filters out "noise" days where the bot just sat in cash
+    active_threshold = 0.001 
+    active_df = df[abs(df['daily_return']) > active_threshold].copy()
+    
+    if not active_df.empty:
+        active_mean = active_df['daily_return'].mean()
+        active_std = active_df['daily_return'].std()
+        active_count = len(active_df)
+        if active_std > 0:
+            sqn_raw = (active_mean / active_std) * (active_count ** 0.5)
+        else:
+            sqn_raw = 0
+    else:
+        sqn_raw = 0
+
     # --- BASIC METRICS ---
     days = (df['timestamp'].max() - df['timestamp'].min()).days
     if days < 1: days = 1
@@ -199,8 +222,6 @@ def calculate_advanced_metrics(hist_df):
     df['dd'] = (df['equity'] - df['peak']) / df['peak']
     max_dd = df['dd'].min()
     
-    mean_ret = df['daily_return'].mean()
-    std_ret = df['daily_return'].std()
     sharpe = (mean_ret / std_ret) * (252 ** 0.5) if std_ret > 0 else 0
     
     downside_std = df[df['daily_return'] < 0]['daily_return'].std()
@@ -213,31 +234,17 @@ def calculate_advanced_metrics(hist_df):
     gross_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    # --- SQN CALCULATION (RAW / ACTIVE) ---
-    # SQN = (Average Active Return / Std Dev of Active Returns) * Sqrt(Active Days)
-    if not active_df.empty:
-        active_mean = active_df['daily_return'].mean()
-        active_std = active_df['daily_return'].std()
-        active_count = len(active_df)
-        
-        if active_std > 0:
-            sqn = (active_mean / active_std) * (active_count ** 0.5)
-        else:
-            sqn = 0
-    else:
-        sqn = 0
-
-    # --- KELLY CRITERION ---
+    # Kelly Logic
     wins = len(active_df[active_df['daily_return'] > 0])
     total_active = len(active_df)
-    win_rate = (wins / total_active) if total_active > 0 else 0
+    win_rate_active = (wins / total_active) if total_active > 0 else 0
 
     avg_win = active_df[active_df['daily_pl_abs'] > 0]['daily_pl_abs'].mean() if wins > 0 else 0
     avg_loss = abs(active_df[active_df['daily_pl_abs'] < 0]['daily_pl_abs'].mean()) if (total_active - wins) > 0 else 0
     risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
 
     if risk_reward > 0:
-        kelly = win_rate - ((1 - win_rate) / risk_reward)
+        kelly = win_rate_active - ((1 - win_rate_active) / risk_reward)
     else:
         kelly = 0
     
@@ -248,23 +255,23 @@ def calculate_advanced_metrics(hist_df):
         "Max Drawdown": max_dd,
         "Sharpe Ratio": sharpe,
         "Sortino Ratio": sortino,
-        "Win Rate (Active)": win_rate,
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
-        "SQN": sqn,
-        "Risk:Reward": risk_reward,
+        "SQN Norm": sqn_norm,
+        "SQN Raw": sqn_raw,
+        "Win Rate (Active)": win_rate_active,
         "Kelly Criterion": kelly_pct
     }
 
 def create_scorecard_df(metrics):
-    """Formats metrics into a DataFrame matching the visual style."""
+    """Formats metrics including Dual SQN."""
     
-    # Define SQN Verdict (Scale adjusted for Raw SQN)
-    sqn = metrics['SQN']
-    if sqn > 10.0: sqn_verdict = "🦄 Holy Grail"
-    elif sqn > 7.0: sqn_verdict = "🚀 Elite"
-    elif sqn > 3.0: sqn_verdict = "✅ Strong"
-    else: sqn_verdict = "😐 Average"
+    # Verdict Logic for Raw SQN
+    sqn_raw = metrics['SQN Raw']
+    if sqn_raw > 7.0: raw_verdict = "🦄 Holy Grail"
+    elif sqn_raw > 3.0: raw_verdict = "🚀 Strong"
+    elif sqn_raw > 1.7: raw_verdict = "✅ Good"
+    else: raw_verdict = "😐 Average"
 
     data = [
         # --- RETURN & RISK ---
@@ -278,7 +285,11 @@ def create_scorecard_df(metrics):
         
         # --- ADVANCED STATS ---
         {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
-        {"METRIC": "System Quality (SQN)", "YOURS": f"{metrics['SQN']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
+        
+        # DUAL SQN DISPLAY
+        {"METRIC": "SQN (Norm.)", "YOURS": f"{metrics['SQN Norm']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "✅ Good" if metrics['SQN Norm'] > 2.0 else "😐 Std"},
+        {"METRIC": "SQN (Raw)", "YOURS": f"{metrics['SQN Raw']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": raw_verdict},
+        
         {"METRIC": "Active Win Rate", "YOURS": f"{metrics['Win Rate (Active)']:.0%}", "BENCHMARK": "50-60%", "VERDICT": "✅ Stable" if metrics['Win Rate (Active)'] > 0.5 else "🔻 Low"},
         
         # --- MONEY MANAGEMENT ---
