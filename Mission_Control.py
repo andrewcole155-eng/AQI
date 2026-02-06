@@ -177,7 +177,7 @@ def calculate_daily_returns(df):
     return df
 
 def calculate_advanced_metrics(hist_df):
-    """Calculates metrics with Dual SQN (Normal vs Raw)."""
+    """Calculates metrics with Stricter Active Day filtering for Raw SQN."""
     if hist_df.empty: return {}
     
     # Prepare data
@@ -195,22 +195,25 @@ def calculate_advanced_metrics(hist_df):
     else:
         sqn_norm = 0
         
-    # --- 2. RAW SQN (Active Moves Only) ---
-    # FILTER: Only count days where equity moved more than 0.1%
-    # This filters out "noise" days where the bot just sat in cash
-    active_threshold = 0.001 
+    # --- 2. RAW SQN (Significant Moves Only) ---
+    # FILTER: Increase threshold to 0.25% to ignore market noise/flat days
+    # This isolates the days where the bot's decisions actually impacted equity
+    active_threshold = 0.0025 
     active_df = df[abs(df['daily_return']) > active_threshold].copy()
     
     if not active_df.empty:
         active_mean = active_df['daily_return'].mean()
         active_std = active_df['daily_return'].std()
         active_count = len(active_df)
+        
+        # Standard SQN Formula: (Mean / StdDev) * Sqrt(N)
         if active_std > 0:
             sqn_raw = (active_mean / active_std) * (active_count ** 0.5)
         else:
             sqn_raw = 0
     else:
-        sqn_raw = 0
+        # Fallback if volatility is extremely low
+        sqn_raw = sqn_norm
 
     # --- BASIC METRICS ---
     days = (df['timestamp'].max() - df['timestamp'].min()).days
@@ -234,7 +237,7 @@ def calculate_advanced_metrics(hist_df):
     gross_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    # Kelly Logic
+    # Kelly Logic (Use Active Stats)
     wins = len(active_df[active_df['daily_return'] > 0])
     total_active = len(active_df)
     win_rate_active = (wins / total_active) if total_active > 0 else 0
@@ -255,11 +258,12 @@ def calculate_advanced_metrics(hist_df):
         "Max Drawdown": max_dd,
         "Sharpe Ratio": sharpe,
         "Sortino Ratio": sortino,
+        "Win Rate (Active)": win_rate_active,
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
         "SQN Norm": sqn_norm,
         "SQN Raw": sqn_raw,
-        "Win Rate (Active)": win_rate_active,
+        "Risk:Reward": risk_reward,
         "Kelly Criterion": kelly_pct
     }
 
