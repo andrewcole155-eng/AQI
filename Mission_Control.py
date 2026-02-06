@@ -165,6 +165,65 @@ def calculate_daily_returns(df):
     df['color'] = df['daily_return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b')
     return df
 
+def calculate_advanced_metrics(hist_df):
+    """Calculates institutional metrics from the equity curve."""
+    if hist_df.empty: return {}
+    
+    # Prepare data
+    df = hist_df.copy()
+    df['daily_return'] = df['equity'].pct_change()
+    df['daily_return_pct'] = df['daily_return'] * 100
+    
+    # 1. CAGR (Annualized Return) - Extrapolated from available data
+    days = (df['timestamp'].max() - df['timestamp'].min()).days
+    if days < 1: days = 1
+    total_return = (df['equity'].iloc[-1] - df['equity'].iloc[0]) / df['equity'].iloc[0]
+    cagr = ((1 + total_return) ** (365 / days)) - 1
+    
+    # 2. Max Drawdown
+    df['peak'] = df['equity'].cummax()
+    df['dd'] = (df['equity'] - df['peak']) / df['peak']
+    max_dd = df['dd'].min()
+    
+    # 3. Sharpe Ratio (Assume 0% risk-free rate for simplicity)
+    mean_ret = df['daily_return'].mean()
+    std_ret = df['daily_return'].std()
+    sharpe = (mean_ret / std_ret) * (252 ** 0.5) if std_ret > 0 else 0
+    
+    # 4. Sortino Ratio (Downside deviation only)
+    downside_std = df[df['daily_return'] < 0]['daily_return'].std()
+    sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
+    
+    # 5. Daily Win Rate
+    wins = len(df[df['daily_return'] > 0])
+    total = len(df) - 1 # Minus first day (NaN)
+    win_rate = (wins / total) if total > 0 else 0
+    
+    # 6. MAR Ratio (CAGR / Max Drawdown)
+    mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
+    
+    return {
+        "CAGR": cagr,
+        "Max Drawdown": max_dd,
+        "Sharpe Ratio": sharpe,
+        "Sortino Ratio": sortino,
+        "Win Rate (Days)": win_rate,
+        "MAR Ratio": mar
+    }
+
+def create_scorecard_df(metrics):
+    """Formats metrics into a DataFrame matching the requested visual style."""
+    data = [
+        {"METRIC": "CAGR (Est.)", "YOURS": f"{metrics['CAGR']:.1%}", "BENCHMARK": "> 20%", "VERDICT": "🏆 Elite" if metrics['CAGR'] > 0.2 else "😐 Std"},
+        {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics['Sharpe Ratio']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics['Sharpe Ratio'] > 1.5 else "😐 Std"},
+        {"METRIC": "Max Drawdown", "YOURS": f"{metrics['Max Drawdown']:.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics['Max Drawdown']) < 0.15 else "⚠️ High Risk"},
+        {"METRIC": "MAR Ratio", "YOURS": f"{metrics['MAR Ratio']:.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics['MAR Ratio'] > 1.0 else "😐 Std"},
+        {"METRIC": "Sortino Ratio", "YOURS": f"{metrics['Sortino Ratio']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "💎 Strong" if metrics['Sortino Ratio'] > 2.0 else "😐 Std"},
+        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Days)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Days)'] > 0.5 else "🔻 Low"}
+    ]
+    return pd.DataFrame(data)
+
+
 
 
 # === DASHBOARD LOGIC ===
@@ -290,7 +349,7 @@ with tab1:
             )
         else:
             st.caption("No active positions currently held.")
-            
+
 with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
     st.markdown(f'<div class="terminal-box">{"".join(logs)}</div>', unsafe_allow_html=True)
@@ -299,81 +358,83 @@ with tab3:
     hist_df = get_portfolio_history(api)
     
     if not hist_df.empty:
-        # --- PREPARE DATA ---
+        # --- CALCULATIONS ---
+        metrics = calculate_advanced_metrics(hist_df)
+        scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
-        ret_df = calculate_daily_returns(hist_df)
         
-        # --- ROW 1: EQUITY & DRAWDOWN ---
+        # --- SECTION 1: THE INSTITUTIONAL SCORECARD ---
+        st.markdown("### 🏆 Strategy Scorecard")
+        
+        # We use a dataframe with column config to mimic the image
+        st.dataframe(
+            scorecard_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "METRIC": st.column_config.TextColumn("Metric", width="medium"),
+                "YOURS": st.column_config.TextColumn("Your Bot", width="small"),
+                "BENCHMARK": st.column_config.TextColumn("Target", width="small"),
+                "VERDICT": st.column_config.TextColumn("Verdict", width="small"),
+            }
+        )
+        
+        st.divider()
+
+        # --- SECTION 2: CHARTS ---
         col_perf1, col_perf2 = st.columns(2)
         
         with col_perf1:
-            st.markdown("### 📈 Net Liquidity (30D)")
+            st.markdown("### 📈 Equity Curve")
             fig_eq = px.area(hist_df, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
             fig_eq.update_layout(
                 margin=dict(l=0, r=0, t=10, b=0),
                 xaxis_title=None, yaxis_title=None, showlegend=False,
                 height=300,
-                # Dynamic scaling to make the chart look "full"
                 yaxis=dict(range=[min(hist_df['equity']) * 0.99, max(hist_df['equity']) * 1.01])
             )
             st.plotly_chart(fig_eq, use_container_width=True)
 
         with col_perf2:
-            st.markdown("### 📉 Drawdown (Risk)")
+            st.markdown("### 📉 Risk (Drawdown)")
             fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
             fig_dd.update_layout(
                 margin=dict(l=0, r=0, t=10, b=0),
                 xaxis_title=None, yaxis_title=None, showlegend=False,
                 height=300,
-                yaxis=dict(tickformat=".1%") # Format as percentage
+                yaxis=dict(tickformat=".1%")
             )
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- ROW 2: VOLATILITY & ALLOCATION ---
-        st.divider()
-        col_perf3, col_perf4 = st.columns(2)
-
-        with col_perf3:
-            st.markdown("### 📊 Daily Returns (%)")
-            fig_ret = px.bar(ret_df, x='timestamp', y='daily_return')
-            fig_ret.update_traces(marker_color=ret_df['color'])
-            fig_ret.update_layout(
-                margin=dict(l=0, r=0, t=10, b=0),
-                xaxis_title=None, yaxis_title=None, showlegend=False,
-                height=300
+        # --- SECTION 3: WIN RATE HEATMAP (New) ---
+        st.markdown("### 📊 Performance by Asset")
+        if positions:
+            # We can only show CURRENT position performance here without a full trade DB
+            # But we can make it look nice
+            pos_data = []
+            for p in positions:
+                pos_data.append({
+                    "Ticker": p['symbol'],
+                    "Return (%)": float(p['unrealized_plpc']) * 100,
+                    "Value": float(p['market_value'])
+                })
+            df_pos_perf = pd.DataFrame(pos_data)
+            
+            fig_tree = px.treemap(
+                df_pos_perf, 
+                path=['Ticker'], 
+                values='Value',
+                color='Return (%)',
+                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
+                color_continuous_midpoint=0
             )
-            st.plotly_chart(fig_ret, use_container_width=True)
-
-        with col_perf4:
-            st.markdown("### 🍰 Asset Allocation")
-            if positions:
-                # Prepare allocation data
-                alloc_data = []
-                total_market_val = 0
-                for p in positions:
-                    mv = float(p['qty']) * float(p['current_price'])
-                    total_market_val += mv
-                    alloc_data.append({"Ticker": p['symbol'], "Value": mv})
-                
-                # Add Cash to the pie
-                cash = float(account['cash'])
-                alloc_data.append({"Ticker": "CASH", "Value": cash})
-                
-                df_alloc = pd.DataFrame(alloc_data)
-                
-                fig_pie = px.pie(df_alloc, values='Value', names='Ticker', hole=0.4)
-                fig_pie.update_traces(textinfo='percent+label')
-                fig_pie.update_layout(
-                    margin=dict(l=0, r=0, t=10, b=0),
-                    showlegend=True,
-                    height=300,
-                    legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.1)
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
-            else:
-                st.info("No positions held. Portfolio is 100% Cash.")
+            fig_tree.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
+            st.plotly_chart(fig_tree, use_container_width=True)
+            st.caption("Size = Position Value | Color = Profit/Loss %")
+        else:
+            st.info("No active positions to analyze.")
 
     else:
         st.write("No history data available yet.")
