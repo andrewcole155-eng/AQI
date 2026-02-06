@@ -234,6 +234,68 @@ def create_scorecard_df(metrics):
     ]
     return pd.DataFrame(data)
 
+def calculate_future_projections(hist_df, current_equity):
+    """
+    Projects equity based on current CAGR for:
+    1. End of every month for the next 12 months.
+    2. End of the specific current month for the next 10 years.
+    """
+    if hist_df.empty: return pd.DataFrame()
+    
+    # 1. Calculate Current CAGR (The Engine)
+    df = hist_df.copy()
+    days_trading = (df['timestamp'].max() - df['timestamp'].min()).days
+    if days_trading < 1: days_trading = 1
+    
+    # Total return based on official start date vs current live equity
+    start_equity = df['equity'].iloc[0]
+    total_return = (current_equity - start_equity) / start_equity
+    
+    # Annualized Rate
+    cagr = ((1 + total_return) ** (365 / days_trading)) - 1
+    
+    # 2. Generate Target Dates
+    today = pd.Timestamp.now().normalize()
+    target_dates = []
+    
+    # A. Monthly: End of month for next 12 months (e.g., Feb 26, Mar 26... Feb 27)
+    # We use MonthEnd offset to always get the last day
+    for i in range(0, 13): 
+        future_date = today + pd.tseries.offsets.MonthEnd(i)
+        # If we are already past the month end (rare edge case), skip
+        if future_date < today: 
+            future_date = today + pd.tseries.offsets.MonthEnd(i+1)
+        target_dates.append(future_date)
+        
+    # B. Yearly: End of [Current Month] for next 10 years (e.g., Feb 28, Feb 29...)
+    # We start from year 2 because year 1 is covered by the monthly loop above
+    current_month_index = today.month 
+    for i in range(2, 11): 
+        # Calculate future year
+        future_year = today.year + i
+        # Create timestamp for 1st of that month, then add MonthEnd
+        future_dt = pd.Timestamp(year=future_year, month=current_month_index, day=1) + pd.tseries.offsets.MonthEnd(0)
+        target_dates.append(future_dt)
+
+    # Deduplicate and Sort
+    target_dates = sorted(list(set(target_dates)))
+    
+    # 3. Calculate Projections
+    projections = []
+    for date in target_dates:
+        # Calculate years from NOW
+        years_future = (date - today).days / 365.25
+        
+        # Future Value Formula: PV * (1+r)^t
+        future_val = current_equity * ((1 + cagr) ** years_future)
+        
+        projections.append({
+            "Date": date,
+            "Timeline": "Next 12 Months" if years_future <= 1.05 else "10-Year Vision",
+            "Projected Value": future_val
+        })
+        
+    return pd.DataFrame(projections), cagr
 
 
 
@@ -368,16 +430,18 @@ with tab2:
 with tab3:
     hist_df = get_portfolio_history(api)
     
-    if not hist_df.empty:
+    if not hist_df.empty and account:
         # --- CALCULATIONS ---
         metrics = calculate_advanced_metrics(hist_df)
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
         
+        # Current Live Equity for projections
+        current_equity = float(account['equity'])
+        proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
+
         # --- SECTION 1: THE INSTITUTIONAL SCORECARD ---
         st.markdown("### 🏆 Strategy Scorecard")
-        
-        # We use a dataframe with column config to mimic the image
         st.dataframe(
             scorecard_df,
             use_container_width=True,
@@ -389,14 +453,12 @@ with tab3:
                 "VERDICT": st.column_config.TextColumn("Verdict", width="small"),
             }
         )
-        
         st.divider()
 
         # --- SECTION 2: CHARTS ---
         col_perf1, col_perf2 = st.columns(2)
-        
         with col_perf1:
-            st.markdown("### 📈 Equity Curve")
+            st.markdown("### 📈 Equity Curve (Live)")
             fig_eq = px.area(hist_df, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
             fig_eq.update_layout(
@@ -419,11 +481,44 @@ with tab3:
             )
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: WIN RATE HEATMAP (New) ---
+        # --- SECTION 3: FUTURE PROJECTIONS (NEW) ---
+        st.divider()
+        st.markdown(f"### 🔮 Future Projections (Based on {current_cagr:.1%} CAGR)")
+        
+        if not proj_df.empty:
+            c_proj1, c_proj2 = st.columns([2, 1])
+            
+            with c_proj1:
+                # Visualization of the growth
+                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
+                fig_proj.update_traces(line_width=3)
+                fig_proj.update_layout(
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    xaxis_title=None, yaxis_title=None,
+                    height=350,
+                    legend=dict(orientation="h", y=1.1, x=0)
+                )
+                st.plotly_chart(fig_proj, use_container_width=True)
+                
+            with c_proj2:
+                # Data Table
+                st.dataframe(
+                    proj_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Date": st.column_config.DateColumn("Target Date", format="MMMM YYYY"),
+                        "Projected Value": st.column_config.NumberColumn("Est. Value", format="$%.2f"),
+                        "Timeline": st.column_config.TextColumn("Phase")
+                    }
+                )
+        else:
+            st.warning("Not enough data to generate projections.")
+
+        # --- SECTION 4: WIN RATE HEATMAP ---
+        st.divider()
         st.markdown("### 📊 Performance by Asset")
         if positions:
-            # We can only show CURRENT position performance here without a full trade DB
-            # But we can make it look nice
             pos_data = []
             for p in positions:
                 pos_data.append({
@@ -443,7 +538,6 @@ with tab3:
             )
             fig_tree.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
             st.plotly_chart(fig_tree, use_container_width=True)
-            st.caption("Size = Position Value | Color = Profit/Loss %")
         else:
             st.info("No active positions to analyze.")
 
