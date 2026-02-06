@@ -245,6 +245,40 @@ def create_scorecard_df(metrics):
     ]
     return pd.DataFrame(data)
 
+def calculate_institutional_score(metrics):
+    """
+    Calculates a weighted score (0-100) to rate the strategy's professionalism.
+    Focuses on Risk-Adjusted Returns (Sharpe/MAR) over raw gains.
+    """
+    score = 0
+    max_score = 0
+    
+    # 1. Sharpe Ratio (Weight: 30%) -> Insts love Sharpe > 2.0
+    # Score 30 pts if Sharpe >= 2.0, scaled down if lower
+    sharpe = metrics.get('Sharpe Ratio', 0)
+    score += min(30, (sharpe / 2.0) * 30)
+    max_score += 30
+    
+    # 2. MAR Ratio (Weight: 25%) -> Return / MaxDD > 1.0 is elite
+    mar = metrics.get('MAR Ratio', 0)
+    score += min(25, (mar / 1.0) * 25)
+    max_score += 25
+    
+    # 3. Max Drawdown (Weight: 25%) -> Penalize heavy drawdowns
+    # Full 25 pts if DD < 10%. 0 pts if DD > 30%
+    dd = abs(metrics.get('Max Drawdown', 0))
+    if dd < 0.10: score += 25
+    elif dd < 0.20: score += 15
+    elif dd < 0.30: score += 5
+    max_score += 25
+    
+    # 4. Sortino (Weight: 20%) -> Penalize downside volatility
+    sortino = metrics.get('Sortino Ratio', 0)
+    score += min(20, (sortino / 3.0) * 20)
+    max_score += 20
+    
+    return min(100, score)
+
 def calculate_future_projections(hist_df, current_equity):
     """
     Projects equity based on current CAGR for:
@@ -444,81 +478,97 @@ with tab3:
     if not hist_df.empty and account:
         current_equity = float(account['equity'])
         
-        # --- CALCULATIONS (Simplified & Clean) ---
+        # --- CALCULATIONS ---
         metrics = calculate_advanced_metrics(hist_df)
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
+        
+        # Calculate Institutional Score
+        inst_score = calculate_institutional_score(metrics)
 
-        # --- SECTION 1: SCORECARD ---
-        st.markdown("### 🏆 Strategy Scorecard")
-        st.dataframe(
-            scorecard_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "METRIC": st.column_config.TextColumn("Metric", width="medium"),
-                "YOURS": st.column_config.TextColumn("Your Bot", width="small"),
-                "BENCHMARK": st.column_config.TextColumn("Target", width="small"),
-                "VERDICT": st.column_config.TextColumn("Verdict", width="small"),
-            }
-        )
+        # --- SECTION 1: THE INSTITUTIONAL GAUGE (NEW) ---
+        col_gauge, col_scorecard = st.columns([1, 2])
+        
+        with col_gauge:
+            fig_gauge = go.Figure(go.Indicator(
+                mode = "gauge+number",
+                value = inst_score,
+                domain = {'x': [0, 1], 'y': [0, 1]},
+                title = {'text': "Strategy Grade", 'font': {'size': 20, 'color': '#e0e0e0'}},
+                number = {'suffix': "/100", 'font': {'color': '#e0e0e0'}},
+                gauge = {
+                    'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "#333"},
+                    'bar': {'color': "#00ff41" if inst_score > 80 else "#ffb000"},
+                    'bgcolor': "#1e1e1e",
+                    'borderwidth': 2,
+                    'bordercolor': "#333",
+                    'steps': [
+                        {'range': [0, 50], 'color': 'rgba(255, 75, 75, 0.3)'},   # Retail (Red)
+                        {'range': [50, 80], 'color': 'rgba(255, 176, 0, 0.3)'}, # Pro (Amber)
+                        {'range': [80, 100], 'color': 'rgba(0, 255, 65, 0.3)'}  # Inst (Green)
+                    ],
+                    'threshold': {
+                        'line': {'color': "white", 'width': 4},
+                        'thickness': 0.75,
+                        'value': inst_score
+                    }
+                }
+            ))
+            fig_gauge.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=10), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
+            st.plotly_chart(fig_gauge, use_container_width=True)
+            
+            # Text Verdict
+            if inst_score > 80:
+                st.markdown("<div style='text-align: center; color: #00ff41; font-weight: bold;'>🚀 INSTITUTIONAL GRADE</div>", unsafe_allow_html=True)
+            elif inst_score > 50:
+                st.markdown("<div style='text-align: center; color: #ffb000; font-weight: bold;'>⚡ PROFESSIONAL RETAIL</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='text-align: center; color: #ff4b4b; font-weight: bold;'>🎲 DEGEN / RETAIL</div>", unsafe_allow_html=True)
+
+        with col_scorecard:
+            st.markdown("### 📊 Metrics Breakdown")
+            st.dataframe(
+                scorecard_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "METRIC": st.column_config.TextColumn("Metric", width="medium"),
+                    "YOURS": st.column_config.TextColumn("Your Bot", width="small"),
+                    "BENCHMARK": st.column_config.TextColumn("Target", width="small"),
+                    "VERDICT": st.column_config.TextColumn("Verdict", width="small"),
+                },
+                height=280 # Match gauge height
+            )
+
         st.divider()
 
-        # --- SECTION 2: PERFORMANCE CHARTS ---
+        # --- SECTION 2: CHARTS ---
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
             st.markdown("### 📈 Equity Curve")
+            fig.update_yaxes(range=[3700, None])
             fig_eq = px.area(hist_df, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
-            fig_eq.update_layout(
-                margin=dict(l=0, r=0, t=10, b=0),
-                xaxis_title=None, yaxis_title=None, showlegend=False,
-                height=300
-            )
+            fig_eq.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300)
             st.plotly_chart(fig_eq, use_container_width=True)
 
         with col_perf2:
             st.markdown("### 📉 Risk (Drawdown)")
             fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
-            fig_dd.update_layout(
-                margin=dict(l=0, r=0, t=10, b=0),
-                xaxis_title=None, yaxis_title=None, showlegend=False,
-                height=300,
-                yaxis=dict(tickformat=".1%")
-            )
+            fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: FUTURE PROJECTIONS ---
-        st.divider()
-        st.markdown(f"### 🔮 Future Projections (Based on {current_cagr:.1%} CAGR)")
-        if not proj_df.empty:
-            c_p1, c_p2 = st.columns([2, 1])
-            with c_p1:
-                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
-                fig_proj.update_traces(line_width=3)
-                fig_proj.update_layout(
-                    margin=dict(l=0, r=0, t=30, b=0),
-                    xaxis_title=None, yaxis_title=None, height=350,
-                    legend=dict(orientation="h", y=1.1, x=0)
-                )
-                st.plotly_chart(fig_proj, use_container_width=True)
-            with c_p2:
-                st.dataframe(proj_df, use_container_width=True, hide_index=True)
-
-        # --- SECTION 4: DEEP QUANT ANALYSIS (NEW) ---
+        # --- SECTION 3: QUANT LAB (Analysis) ---
         st.divider()
         st.subheader("🔬 Quant Lab Analysis")
         
-        # Prepare Data
+        # Prepare Data for Quant Lab
         q_df = hist_df.copy()
         q_df['daily_ret_pct'] = q_df['equity'].pct_change() * 100
         q_df['Day'] = q_df['timestamp'].dt.day_name()
-        
-        # 1. Rolling Volatility (Risk Radar)
-        # 30-Day Rolling Std Dev (Annualized)
-        q_df['vol_30'] = q_df['daily_ret_pct'].rolling(30).std() * (252**0.5)
+        q_df['vol_30'] = q_df['daily_ret_pct'].rolling(30).std() * (252**0.5) # Rolling Vol
         
         col_q1, col_q2 = st.columns(2)
         
@@ -526,89 +576,33 @@ with tab3:
             st.markdown("### 🌊 Rolling Risk (Volatility)")
             if not q_df['vol_30'].dropna().empty:
                 fig_vol = px.line(q_df, x='timestamp', y='vol_30', labels={'vol_30': 'Annualized Vol (%)'})
-                fig_vol.update_traces(line_color='#ffb000') # Amber color
+                fig_vol.update_traces(line_color='#ffb000') 
                 fig_vol.add_hline(y=q_df['vol_30'].mean(), line_dash="dot", annotation_text="Avg Risk")
                 fig_vol.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
                 st.plotly_chart(fig_vol, use_container_width=True)
-                st.caption("Spikes indicate chaotic market phases.")
             else:
                 st.info("Need 30 days of data for volatility analysis.")
 
         with col_q2:
             st.markdown("### 📅 Day-of-Week Performance")
-            # Calculate Avg Return per Day
             day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
             day_perf = q_df.groupby('Day')['daily_ret_pct'].mean().reindex(day_order)
-            
-            fig_day = px.bar(
-                x=day_perf.index, 
-                y=day_perf.values, 
-                color=day_perf.values,
-                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
-                labels={'x': 'Day', 'y': 'Avg Return (%)'}
-            )
-            fig_day.update_layout(height=300, showlegend=False, margin=dict(l=0, r=0, t=10, b=0))
+            fig_day = px.bar(x=day_perf.index, y=day_perf.values, color=day_perf.values, color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'])
+            fig_day.update_layout(height=300, showlegend=False, margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None)
             st.plotly_chart(fig_day, use_container_width=True)
-            st.caption("Identify if specific days are dragging you down.")
 
-        # 3. Extremes (Hall of Fame)
-        st.markdown("### 🎢 Market Extremes")
-        col_ex1, col_ex2 = st.columns(2)
-        
-        with col_ex1:
-            st.caption("🏆 Top 3 Best Days")
-            best = q_df.nlargest(3, 'daily_ret_pct')[['timestamp', 'daily_ret_pct']]
-            st.dataframe(
-                best, 
-                use_container_width=True, 
-                hide_index=True,
-                column_config={
-                    "timestamp": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-                    "daily_ret_pct": st.column_config.NumberColumn("Gain", format="+%.2f%%")
-                }
-            )
-
-        with col_ex2:
-            st.caption("💀 Top 3 Worst Days")
-            worst = q_df.nsmallest(3, 'daily_ret_pct')[['timestamp', 'daily_ret_pct']]
-            st.dataframe(
-                worst, 
-                use_container_width=True, 
-                hide_index=True,
-                column_config={
-                    "timestamp": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-                    "daily_ret_pct": st.column_config.NumberColumn("Loss", format="%.2f%%")
-                }
-            )
-
-        # --- SECTION 5: HEATMAP & DISTRIBUTION (Existing) ---
+        # --- SECTION 4: FUTURE PROJECTIONS ---
         st.divider()
-        col_deep1, col_deep2 = st.columns(2)
-        with col_deep1:
-            st.markdown("### 📅 Monthly Heatmap")
-            # (Reuse your existing Heatmap logic here)
-            hm_df = hist_df.copy()
-            hm_df['Year'] = hm_df['timestamp'].dt.year
-            hm_df['Month'] = hm_df['timestamp'].dt.strftime('%b')
-            monthly_ret = hm_df.set_index('timestamp')['equity'].resample('ME').last().pct_change() * 100
-            if not monthly_ret.empty:
-                m_df = pd.DataFrame(monthly_ret).reset_index()
-                m_df['Year'] = m_df['timestamp'].dt.year
-                m_df['Month'] = m_df['timestamp'].dt.strftime('%b')
-                m_df['Return'] = m_df['equity']
-                heatmap_data = m_df.pivot(index='Year', columns='Month', values='Return')
-                heatmap_data = heatmap_data.reindex(columns=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])
-                fig_hm = px.imshow(heatmap_data, text_auto='.1f', color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'], color_continuous_midpoint=0)
-                fig_hm.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
-                st.plotly_chart(fig_hm, use_container_width=True)
-
-        with col_deep2:
-            st.markdown("### 🔔 Return Distribution")
-            # (Reuse your existing Histogram logic here)
-            fig_hist = px.histogram(q_df, x="daily_ret_pct", nbins=30, labels={'daily_ret_pct': 'Return (%)'}, color_discrete_sequence=['#00ff41'])
-            fig_hist.add_vline(x=q_df['daily_ret_pct'].mean(), line_dash="dash", line_color="white")
-            fig_hist.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
-            st.plotly_chart(fig_hist, use_container_width=True)
+        st.markdown(f"### 🔮 Future Projections")
+        if not proj_df.empty:
+            c_p1, c_p2 = st.columns([2, 1])
+            with c_p1:
+                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
+                fig_proj.update_traces(line_width=3)
+                fig_proj.update_layout(margin=dict(l=0, r=0, t=30, b=0), xaxis_title=None, yaxis_title=None, height=350, legend=dict(orientation="h", y=1.1, x=0))
+                st.plotly_chart(fig_proj, use_container_width=True)
+            with c_p2:
+                st.dataframe(proj_df, use_container_width=True, hide_index=True)
 
     else:
         st.write("No history data available yet.")
