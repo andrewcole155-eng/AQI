@@ -8,6 +8,7 @@ import alpaca_trade_api as tradeapi
 import gspread
 from datetime import datetime, timedelta
 import pytz
+import plotly.graph_objects as go
 
 st.set_page_config(
     page_title="Angel V6 Mission Control",
