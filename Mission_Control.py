@@ -548,19 +548,27 @@ with tab3:
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
             st.markdown("### 📈 Equity Curve")
+            
+            # Calculate the max value dynamically so the top doesn't get cut off
+            max_equity = hist_df['equity'].max()
+            
             fig_eq = px.area(hist_df, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
             
-            # UPDATED: Added yaxis range to start at 3700
             fig_eq.update_layout(
-                margin=dict(l=0, r=0, t=10, b=0), 
-                xaxis_title=None, 
-                yaxis_title=None, 
-                showlegend=False, 
+                margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_title=None,
+                yaxis_title=None,
+                showlegend=False,
                 height=300,
-                yaxis=dict(range=[3700, None]) # <--- THIS IS THE FIX
+                # FIX: Set explicit numbers for both Min and Max
+                yaxis=dict(
+                    range=[3700, max_equity * 1.02], 
+                    rangemode="normal"  # This is crucial: stops it from forcing 0
+                )
             )
             st.plotly_chart(fig_eq, use_container_width=True)
+
 
         with col_perf2:
             st.markdown("### 📉 Risk (Drawdown)")
