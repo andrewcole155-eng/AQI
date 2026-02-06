@@ -177,7 +177,7 @@ def calculate_daily_returns(df):
     return df
 
 def calculate_advanced_metrics(hist_df):
-    """Calculates metrics with Stricter Active Day filtering for Raw SQN."""
+    """Calculates metrics using Dollar-Based SQN for higher accuracy."""
     if hist_df.empty: return {}
     
     # Prepare data
@@ -185,7 +185,26 @@ def calculate_advanced_metrics(hist_df):
     df['daily_return'] = df['equity'].pct_change()
     df['daily_pl_abs'] = df['equity'].diff()
     
-    # --- 1. NORMALIZED SQN (All Days) ---
+    # --- 1. SQN (DOLLAR BASED) ---
+    # We use Dollar P/L because it aligns better with manual "Per Trade" SQN.
+    # Filter: Only count days where P/L moved more than $1.00 (removes noise)
+    active_dollar_df = df[abs(df['daily_pl_abs']) > 1.0].copy()
+    
+    if not active_dollar_df.empty:
+        dollar_mean = active_dollar_df['daily_pl_abs'].mean()
+        dollar_std = active_dollar_df['daily_pl_abs'].std()
+        dollar_count = len(active_dollar_df)
+        
+        # SQN = (Average $ Profit / StdDev of $) * Sqrt(Count)
+        if dollar_std > 0:
+            sqn_raw = (dollar_mean / dollar_std) * (dollar_count ** 0.5)
+        else:
+            sqn_raw = 0
+    else:
+        sqn_raw = 0
+
+    # --- SQN (NORMALIZED / PERCENT) ---
+    # Kept for reference, calculated on ALL days
     mean_ret = df['daily_return'].mean()
     std_ret = df['daily_return'].std()
     total_days = len(df) - 1
@@ -194,26 +213,6 @@ def calculate_advanced_metrics(hist_df):
         sqn_norm = (mean_ret / std_ret) * (total_days ** 0.5)
     else:
         sqn_norm = 0
-        
-    # --- 2. RAW SQN (Significant Moves Only) ---
-    # FILTER: Increase threshold to 0.25% to ignore market noise/flat days
-    # This isolates the days where the bot's decisions actually impacted equity
-    active_threshold = 0.0025 
-    active_df = df[abs(df['daily_return']) > active_threshold].copy()
-    
-    if not active_df.empty:
-        active_mean = active_df['daily_return'].mean()
-        active_std = active_df['daily_return'].std()
-        active_count = len(active_df)
-        
-        # Standard SQN Formula: (Mean / StdDev) * Sqrt(N)
-        if active_std > 0:
-            sqn_raw = (active_mean / active_std) * (active_count ** 0.5)
-        else:
-            sqn_raw = 0
-    else:
-        # Fallback if volatility is extremely low
-        sqn_raw = sqn_norm
 
     # --- BASIC METRICS ---
     days = (df['timestamp'].max() - df['timestamp'].min()).days
@@ -237,13 +236,13 @@ def calculate_advanced_metrics(hist_df):
     gross_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    # Kelly Logic (Use Active Stats)
-    wins = len(active_df[active_df['daily_return'] > 0])
-    total_active = len(active_df)
+    # Kelly Logic (Use Active Dollar Days)
+    wins = len(active_dollar_df[active_dollar_df['daily_pl_abs'] > 0])
+    total_active = len(active_dollar_df)
     win_rate_active = (wins / total_active) if total_active > 0 else 0
 
-    avg_win = active_df[active_df['daily_pl_abs'] > 0]['daily_pl_abs'].mean() if wins > 0 else 0
-    avg_loss = abs(active_df[active_df['daily_pl_abs'] < 0]['daily_pl_abs'].mean()) if (total_active - wins) > 0 else 0
+    avg_win = active_dollar_df[active_dollar_df['daily_pl_abs'] > 0]['daily_pl_abs'].mean() if wins > 0 else 0
+    avg_loss = abs(active_dollar_df[active_dollar_df['daily_pl_abs'] < 0]['daily_pl_abs'].mean()) if (total_active - wins) > 0 else 0
     risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
 
     if risk_reward > 0:
@@ -262,19 +261,19 @@ def calculate_advanced_metrics(hist_df):
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
         "SQN Norm": sqn_norm,
-        "SQN Raw": sqn_raw,
+        "SQN Raw": sqn_raw, # Now Dollar Based
         "Risk:Reward": risk_reward,
         "Kelly Criterion": kelly_pct
     }
 
 def create_scorecard_df(metrics):
-    """Formats metrics including Dual SQN."""
+    """Formats metrics including Dollar-Based SQN."""
     
-    # Verdict Logic for Raw SQN
+    # Verdict Logic for SQN (Dollar Based often scales higher)
     sqn_raw = metrics['SQN Raw']
-    if sqn_raw > 7.0: raw_verdict = "🦄 Holy Grail"
-    elif sqn_raw > 3.0: raw_verdict = "🚀 Strong"
-    elif sqn_raw > 1.7: raw_verdict = "✅ Good"
+    if sqn_raw > 10.0: raw_verdict = "🦄 Holy Grail"
+    elif sqn_raw > 7.0: raw_verdict = "🚀 Elite"
+    elif sqn_raw > 3.0: raw_verdict = "✅ Strong"
     else: raw_verdict = "😐 Average"
 
     data = [
@@ -292,7 +291,7 @@ def create_scorecard_df(metrics):
         
         # DUAL SQN DISPLAY
         {"METRIC": "SQN (Norm.)", "YOURS": f"{metrics['SQN Norm']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "✅ Good" if metrics['SQN Norm'] > 2.0 else "😐 Std"},
-        {"METRIC": "SQN (Raw)", "YOURS": f"{metrics['SQN Raw']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": raw_verdict},
+        {"METRIC": "SQN (Dollar)", "YOURS": f"{metrics['SQN Raw']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": raw_verdict},
         
         {"METRIC": "Active Win Rate", "YOURS": f"{metrics['Win Rate (Active)']:.0%}", "BENCHMARK": "50-60%", "VERDICT": "✅ Stable" if metrics['Win Rate (Active)'] > 0.5 else "🔻 Low"},
         
