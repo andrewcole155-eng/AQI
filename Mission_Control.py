@@ -177,53 +177,14 @@ def calculate_daily_returns(df):
     df['color'] = df['daily_return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b')
     return df
 
-def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500):
-    """Calculates metrics using Grossed-Up + Resampled Trade Proxy."""
+def calculate_advanced_metrics(hist_df):
+    """Calculates strict Portfolio Metrics (No synthetic Trade Projections)."""
     if hist_df.empty: return {}
     
-    # 1. Determine Allocation Ratio
-    # (e.g., $500 trade on $4200 equity = ~12% allocation)
-    if current_equity > 0:
-        allocation_ratio = investment_amount / current_equity
-    else:
-        allocation_ratio = 1.0
-    allocation_ratio = max(0.05, min(1.0, allocation_ratio))
-    
-    # 2. Prepare Data
     df = hist_df.copy()
     df['daily_return'] = df['equity'].pct_change()
     
-    # --- STEP A: GROSS UP (Simulate 100% Allocation) ---
-    # This reveals the true volatility of the STRATEGY, not just the PORTFOLIO
-    df['strategy_daily_ret'] = df['daily_return'] / allocation_ratio
-    
-    # --- STEP B: RESAMPLE (Simulate Trade Duration) ---
-    # We group days into 3-Day blocks to mimic a "Swing Trade" outcome.
-    # This smooths out intra-trade noise and boosts SQN closer to manual calculations.
-    # We sum the returns over 3 days to get "Total Return per Trade Block"
-    trade_proxy_df = df.set_index('timestamp')['strategy_daily_ret'].resample('3D').sum().dropna()
-    
-    # --- STEP C: CALCULATE METRICS ON PROXY ---
-    
-    # Filter out empty blocks (no activity)
-    active_trades = trade_proxy_df[abs(trade_proxy_df) > 0.005] # Filter noise < 0.5%
-    
-    if not active_trades.empty:
-        trade_mean = active_trades.mean()
-        trade_std = active_trades.std()
-        trade_count = len(active_trades)
-        
-        # SQN = (Avg Trade Return / StdDev of Trade Returns) * Sqrt(N_Trades)
-        if trade_std > 0:
-            sqn_strategy = (trade_mean / trade_std) * (trade_count ** 0.5)
-        else:
-            sqn_strategy = 0
-    else:
-        sqn_strategy = 0
-        trade_mean = 0
-        trade_std = 0
-
-    # --- PORTFOLIO METRICS (Standard) ---
+    # --- 1. RETURN & RISK ---
     days = (df['timestamp'].max() - df['timestamp'].min()).days
     if days < 1: days = 1
     total_return = (df['equity'].iloc[-1] - df['equity'].iloc[0]) / df['equity'].iloc[0]
@@ -232,33 +193,28 @@ def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500)
     df['peak'] = df['equity'].cummax()
     max_dd = ((df['equity'] - df['peak']) / df['peak']).min()
     
+    # MAR Ratio (Return / Risk)
+    mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
+
+    # Sharpe Ratio
     mean_ret = df['daily_return'].mean()
     std_ret = df['daily_return'].std()
     sharpe = (mean_ret / std_ret) * (252 ** 0.5) if std_ret > 0 else 0
     
+    # Sortino Ratio
     downside_std = df[df['daily_return'] < 0]['daily_return'].std()
     sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
-    mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
 
-    # Profit Factor
+    # --- 2. PROFITABILITY ---
     df['diff'] = df['equity'].diff()
     gross_profit = df[df['diff'] > 0]['diff'].sum()
     gross_loss = abs(df[df['diff'] < 0]['diff'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    # Kelly Criterion (on Trade Proxy)
-    wins = len(active_trades[active_trades > 0])
-    total_active = len(active_trades)
+    # Win Rate (Days)
+    wins = len(df[df['diff'] > 0])
+    total_active = len(df[df['diff'] != 0])
     win_rate = (wins / total_active) if total_active > 0 else 0
-
-    avg_win = active_trades[active_trades > 0].mean() if wins > 0 else 0
-    avg_loss = abs(active_trades[active_trades < 0].mean()) if (total_active - wins) > 0 else 0
-    risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
-    
-    if risk_reward > 0:
-        kelly = win_rate - ((1 - win_rate) / risk_reward)
-    else:
-        kelly = 0
 
     return {
         "CAGR": cagr,
@@ -267,39 +223,25 @@ def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500)
         "Sortino Ratio": sortino,
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
-        
-        "SQN (Strategy)": sqn_strategy,
-        "Est. Trade Return": trade_mean,
-        "Est. Trade Vol": trade_std, 
-        
-        "Win Rate (Est)": win_rate,
-        "Kelly Criterion": max(0.0, kelly),
-        "Leverage Ratio": allocation_ratio
+        "Win Rate (Daily)": win_rate
     }
 
 def create_scorecard_df(metrics):
-    """Formats metrics including Grossed-Up + Resampled Stats."""
+    """Formats the simplified Strategy Scorecard."""
     
-    sqn = metrics['SQN (Strategy)']
-    # Adjusted scale for Resampled SQN (Values naturally trend lower than pure manual, so we adjust expectations)
-    if sqn > 7.0: sqn_verdict = "🦄 Holy Grail"
-    elif sqn > 3.0: sqn_verdict = "🚀 Strong"
-    elif sqn > 1.7: sqn_verdict = "✅ Good"
-    else: sqn_verdict = "😐 Average"
-
     data = [
-        # --- RETURN & RISK (Portfolio View) ---
+        # --- RETURN ---
         {"METRIC": "CAGR (Account)", "YOURS": f"{metrics['CAGR']:.1%}", "BENCHMARK": "> 20%", "VERDICT": "🏆 Elite" if metrics['CAGR'] > 0.2 else "😐 Std"},
-        {"METRIC": "Max Drawdown", "YOURS": f"{metrics['Max Drawdown']:.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics['Max Drawdown']) < 0.15 else "⚠️ High Risk"},
         {"METRIC": "MAR Ratio", "YOURS": f"{metrics['MAR Ratio']:.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics['MAR Ratio'] > 1.0 else "😐 Std"},
         
-        # --- STRATEGY PERFORMANCE (Trade View) ---
-        {"METRIC": "SQN (Strategy)", "YOURS": f"{metrics['SQN (Strategy)']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
-        {"METRIC": "Est. Trade Vol", "YOURS": f"{metrics['Est. Trade Vol']:.2%}", "BENCHMARK": "~3.28%", "VERDICT": "🎯 Target"},
-        
+        # --- RISK ---
+        {"METRIC": "Max Drawdown", "YOURS": f"{metrics['Max Drawdown']:.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics['Max Drawdown']) < 0.15 else "⚠️ High Risk"},
+        {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics['Sharpe Ratio']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics['Sharpe Ratio'] > 1.5 else "😐 Std"},
+        {"METRIC": "Sortino Ratio", "YOURS": f"{metrics['Sortino Ratio']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "💎 Strong" if metrics['Sortino Ratio'] > 2.0 else "😐 Std"},
+
+        # --- CONSISTENCY ---
         {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
-        {"METRIC": "Est. Win Rate", "YOURS": f"{metrics['Win Rate (Est)']:.0%}", "BENCHMARK": "50-60%", "VERDICT": "✅ Stable" if metrics['Win Rate (Est)'] > 0.5 else "🔻 Low"},
-        {"METRIC": "Kelly Criterion", "YOURS": f"{metrics['Kelly Criterion']:.1%}", "BENCHMARK": "5% - 20%", "VERDICT": "🔥 Aggr." if metrics['Kelly Criterion'] > 0.15 else "🛡️ Safe"},
+        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Daily)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Daily)'] > 0.5 else "🔻 Low"},
     ]
     return pd.DataFrame(data)
 
@@ -500,19 +442,17 @@ with tab3:
     hist_df = get_portfolio_history(api)
     
     if not hist_df.empty and account:
-        # Get Equity for Leverage Calculation
         current_equity = float(account['equity'])
         
-        # --- CALCULATIONS ---
-        # PASSING 500 AS INVESTMENT AMOUNT TO FIX POSITION SIZING SKEW
-        metrics = calculate_advanced_metrics(hist_df, current_equity=current_equity, investment_amount=500)
+        # --- CALCULATIONS (Simplified) ---
+        metrics = calculate_advanced_metrics(hist_df)
         
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
 
         # --- SECTION 1: THE SCORECARD ---
-        st.markdown(f"### 🏆 Strategy Scorecard (Adj. for {metrics['Leverage Ratio']:.1%} Allocation)")
+        st.markdown("### 🏆 Strategy Scorecard")
         st.dataframe(
             scorecard_df,
             use_container_width=True,
