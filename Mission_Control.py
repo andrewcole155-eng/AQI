@@ -183,54 +183,96 @@ def calculate_advanced_metrics(hist_df):
     # Prepare data
     df = hist_df.copy()
     df['daily_return'] = df['equity'].pct_change()
-    df['daily_return_pct'] = df['daily_return'] * 100
+    df['daily_pl_abs'] = df['equity'].diff()
     
-    # 1. CAGR (Annualized Return) - Extrapolated from available data
+    # --- BASIC METRICS ---
     days = (df['timestamp'].max() - df['timestamp'].min()).days
     if days < 1: days = 1
     total_return = (df['equity'].iloc[-1] - df['equity'].iloc[0]) / df['equity'].iloc[0]
     cagr = ((1 + total_return) ** (365 / days)) - 1
     
-    # 2. Max Drawdown
     df['peak'] = df['equity'].cummax()
     df['dd'] = (df['equity'] - df['peak']) / df['peak']
     max_dd = df['dd'].min()
     
-    # 3. Sharpe Ratio (Assume 0% risk-free rate for simplicity)
     mean_ret = df['daily_return'].mean()
     std_ret = df['daily_return'].std()
     sharpe = (mean_ret / std_ret) * (252 ** 0.5) if std_ret > 0 else 0
     
-    # 4. Sortino Ratio (Downside deviation only)
     downside_std = df[df['daily_return'] < 0]['daily_return'].std()
     sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
     
-    # 5. Daily Win Rate
     wins = len(df[df['daily_return'] > 0])
-    total = len(df) - 1 # Minus first day (NaN)
+    losses = len(df[df['daily_return'] < 0])
+    total = len(df) - 1 
     win_rate = (wins / total) if total > 0 else 0
     
-    # 6. MAR Ratio (CAGR / Max Drawdown)
     mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
+
+    # --- ADVANCED METRICS ---
+    gross_profit = df[df['daily_pl_abs'] > 0]['daily_pl_abs'].sum()
+    gross_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].sum())
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
+
+    if std_ret > 0 and total > 0:
+        sqn = (mean_ret / std_ret) * (total ** 0.5)
+    else:
+        sqn = 0
+
+    avg_win = df[df['daily_pl_abs'] > 0]['daily_pl_abs'].mean() if wins > 0 else 0
+    avg_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].mean()) if losses > 0 else 0
+    risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
+
+    # --- KELLY CRITERION ---
+    # Win Rate - ((1 - Win Rate) / Risk Reward Ratio)
+    if risk_reward > 0:
+        kelly = win_rate - ((1 - win_rate) / risk_reward)
+    else:
+        kelly = 0
     
+    # We cap negative Kelly at 0
+    kelly_pct = max(0.0, kelly)
+
     return {
         "CAGR": cagr,
         "Max Drawdown": max_dd,
         "Sharpe Ratio": sharpe,
         "Sortino Ratio": sortino,
         "Win Rate (Days)": win_rate,
-        "MAR Ratio": mar
+        "MAR Ratio": mar,
+        "Profit Factor": profit_factor,
+        "SQN": sqn,
+        "Risk:Reward (Daily)": risk_reward,
+        "Kelly Criterion": kelly_pct
     }
 
 def create_scorecard_df(metrics):
-    """Formats metrics into a DataFrame matching the requested visual style."""
+    """Formats metrics into a DataFrame matching the visual style."""
+    
+    # Define SQN Verdict
+    sqn = metrics['SQN']
+    if sqn > 7.0: sqn_verdict = "🦄 Holy Grail"
+    elif sqn > 3.0: sqn_verdict = "🚀 Strong"
+    elif sqn > 1.7: sqn_verdict = "✅ Good"
+    else: sqn_verdict = "😐 Average"
+
     data = [
+        # --- RETURN & RISK ---
         {"METRIC": "CAGR (Est.)", "YOURS": f"{metrics['CAGR']:.1%}", "BENCHMARK": "> 20%", "VERDICT": "🏆 Elite" if metrics['CAGR'] > 0.2 else "😐 Std"},
-        {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics['Sharpe Ratio']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics['Sharpe Ratio'] > 1.5 else "😐 Std"},
         {"METRIC": "Max Drawdown", "YOURS": f"{metrics['Max Drawdown']:.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics['Max Drawdown']) < 0.15 else "⚠️ High Risk"},
-        {"METRIC": "MAR Ratio", "YOURS": f"{metrics['MAR Ratio']:.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics['MAR Ratio'] > 1.0 else "😐 Std"},
+        
+        # --- EFFICIENCY ---
+        {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics['Sharpe Ratio']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics['Sharpe Ratio'] > 1.5 else "😐 Std"},
         {"METRIC": "Sortino Ratio", "YOURS": f"{metrics['Sortino Ratio']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "💎 Strong" if metrics['Sortino Ratio'] > 2.0 else "😐 Std"},
-        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Days)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Days)'] > 0.5 else "🔻 Low"}
+        {"METRIC": "MAR Ratio", "YOURS": f"{metrics['MAR Ratio']:.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics['MAR Ratio'] > 1.0 else "😐 Std"},
+        
+        # --- ADVANCED STATS ---
+        {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
+        {"METRIC": "System Quality (SQN)", "YOURS": f"{metrics['SQN']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
+        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Days)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Days)'] > 0.5 else "🔻 Low"},
+        
+        # --- MONEY MANAGEMENT ---
+        {"METRIC": "Kelly Criterion", "YOURS": f"{metrics['Kelly Criterion']:.1%}", "BENCHMARK": "5% - 20%", "VERDICT": "🔥 Aggr." if metrics['Kelly Criterion'] > 0.15 else "🛡️ Safe"},
     ]
     return pd.DataFrame(data)
 
@@ -455,7 +497,7 @@ with tab3:
         )
         st.divider()
 
-        # --- SECTION 2: CHARTS ---
+        # --- SECTION 2: EQUITY & RISK CHARTS ---
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
             st.markdown("### 📈 Equity Curve (Live)")
@@ -465,6 +507,7 @@ with tab3:
                 margin=dict(l=0, r=0, t=10, b=0),
                 xaxis_title=None, yaxis_title=None, showlegend=False,
                 height=300,
+                # Dynamic scaling
                 yaxis=dict(range=[min(hist_df['equity']) * 0.99, max(hist_df['equity']) * 1.01])
             )
             st.plotly_chart(fig_eq, use_container_width=True)
@@ -481,7 +524,7 @@ with tab3:
             )
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: FUTURE PROJECTIONS (NEW) ---
+        # --- SECTION 3: FUTURE PROJECTIONS ---
         st.divider()
         st.markdown(f"### 🔮 Future Projections (Based on {current_cagr:.1%} CAGR)")
         
@@ -489,7 +532,7 @@ with tab3:
             c_proj1, c_proj2 = st.columns([2, 1])
             
             with c_proj1:
-                # Visualization of the growth
+                # Growth Chart
                 fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
                 fig_proj.update_traces(line_width=3)
                 fig_proj.update_layout(
@@ -501,7 +544,7 @@ with tab3:
                 st.plotly_chart(fig_proj, use_container_width=True)
                 
             with c_proj2:
-                # Data Table
+                # Projection Table
                 st.dataframe(
                     proj_df,
                     use_container_width=True,
@@ -515,12 +558,79 @@ with tab3:
         else:
             st.warning("Not enough data to generate projections.")
 
-        # --- SECTION 4: WIN RATE HEATMAP ---
+        # --- SECTION 4: CONSISTENCY ANALYSIS (NEW) ---
+        st.divider()
+        col_deep1, col_deep2 = st.columns(2)
+
+        with col_deep1:
+            st.markdown("### 📅 Monthly Performance Heatmap")
+            
+            # Heatmap Data Logic
+            hm_df = hist_df.copy()
+            hm_df['Year'] = hm_df['timestamp'].dt.year
+            hm_df['Month'] = hm_df['timestamp'].dt.month_name()
+            # Calculate monthly return
+            monthly_ret = hm_df.set_index('timestamp')['equity'].resample('M').last().pct_change() * 100
+            
+            if not monthly_ret.empty:
+                m_df = pd.DataFrame(monthly_ret).reset_index()
+                m_df['Year'] = m_df['timestamp'].dt.year
+                m_df['Month'] = m_df['timestamp'].dt.strftime('%b') # Jan, Feb
+                m_df['Return'] = m_df['equity']
+                
+                # Pivot: Index=Year, Cols=Month
+                heatmap_data = m_df.pivot(index='Year', columns='Month', values='Return')
+                
+                # Sort Columns
+                month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                heatmap_data = heatmap_data.reindex(columns=month_order)
+                
+                fig_hm = px.imshow(
+                    heatmap_data,
+                    labels=dict(x="Month", y="Year", color="Return (%)"),
+                    x=heatmap_data.columns,
+                    y=heatmap_data.index,
+                    color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
+                    color_continuous_midpoint=0,
+                    text_auto='.1f'
+                )
+                fig_hm.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
+                st.plotly_chart(fig_hm, use_container_width=True)
+            else:
+                st.info("Not enough data for monthly analysis.")
+
+        with col_deep2:
+            st.markdown("### 🔔 Daily Return Distribution")
+            
+            # Histogram Data Logic
+            rets = hist_df['equity'].pct_change().dropna() * 100
+            
+            fig_hist = px.histogram(
+                rets, 
+                x="equity", 
+                nbins=30,
+                labels={'equity': 'Daily Return (%)'},
+                color_discrete_sequence=['#00ff41']
+            )
+            
+            # Mean Line
+            mean_ret = rets.mean()
+            fig_hist.add_vline(x=mean_ret, line_dash="dash", line_color="white", annotation_text="Avg")
+            
+            fig_hist.update_layout(
+                bargap=0.1, showlegend=False, height=300,
+                margin=dict(l=0, r=0, t=0, b=0),
+                yaxis_title="Frequency"
+            )
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+        # --- SECTION 5: ASSET PERFORMANCE HEATMAP ---
         st.divider()
         st.markdown("### 📊 Performance by Asset")
         if positions:
             pos_data = []
             for p in positions:
+                # Access Dictionary keys ['key']
                 pos_data.append({
                     "Ticker": p['symbol'],
                     "Return (%)": float(p['unrealized_plpc']) * 100,
