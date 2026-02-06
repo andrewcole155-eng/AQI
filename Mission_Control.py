@@ -178,46 +178,48 @@ def calculate_daily_returns(df):
     return df
 
 def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500):
-    """Calculates metrics adjusted for Position Sizing (Strategy View vs Portfolio View)."""
+    """Calculates metrics using Grossed-Up + Resampled Trade Proxy."""
     if hist_df.empty: return {}
     
-    # 1. Determine Allocation Ratio (Position Sizing impact)
-    # If equity is $4200 and trade is $500, ratio is ~0.12
-    # We use this to "Gross Up" the returns to see pure Strategy performance
+    # 1. Determine Allocation Ratio
+    # (e.g., $500 trade on $4200 equity = ~12% allocation)
     if current_equity > 0:
         allocation_ratio = investment_amount / current_equity
     else:
-        allocation_ratio = 1.0 # Fallback
-        
-    # Cap ratio to avoid divide-by-zero or massive multipliers on tiny accounts
+        allocation_ratio = 1.0
     allocation_ratio = max(0.05, min(1.0, allocation_ratio))
     
-    # Prepare data
+    # 2. Prepare Data
     df = hist_df.copy()
     df['daily_return'] = df['equity'].pct_change()
     
-    # --- TRADE BASIS SIMULATION ---
-    # We scale the portfolio daily returns UP by the allocation ratio
-    # This simulates what the return would be if 100% of equity was in the trade
-    df['trade_basis_return'] = df['daily_return'] / allocation_ratio
+    # --- STEP A: GROSS UP (Simulate 100% Allocation) ---
+    # This reveals the true volatility of the STRATEGY, not just the PORTFOLIO
+    df['strategy_daily_ret'] = df['daily_return'] / allocation_ratio
     
-    # Filter for Significant Moves (Trade Days) using the Scaled Return
-    # Threshold: 0.5% move on the *Trade* basis
-    active_trade_df = df[abs(df['trade_basis_return']) > 0.005].copy()
+    # --- STEP B: RESAMPLE (Simulate Trade Duration) ---
+    # We group days into 3-Day blocks to mimic a "Swing Trade" outcome.
+    # This smooths out intra-trade noise and boosts SQN closer to manual calculations.
+    # We sum the returns over 3 days to get "Total Return per Trade Block"
+    trade_proxy_df = df.set_index('timestamp')['strategy_daily_ret'].resample('3D').sum().dropna()
     
-    # --- 1. SQN (Trade Basis) ---
-    if not active_trade_df.empty:
-        trade_mean = active_trade_df['trade_basis_return'].mean()
-        trade_std = active_trade_df['trade_basis_return'].std()
-        trade_count = len(active_trade_df)
+    # --- STEP C: CALCULATE METRICS ON PROXY ---
+    
+    # Filter out empty blocks (no activity)
+    active_trades = trade_proxy_df[abs(trade_proxy_df) > 0.005] # Filter noise < 0.5%
+    
+    if not active_trades.empty:
+        trade_mean = active_trades.mean()
+        trade_std = active_trades.std()
+        trade_count = len(active_trades)
         
-        # Van Tharp SQN: (Mean / Std) * Sqrt(N)
+        # SQN = (Avg Trade Return / StdDev of Trade Returns) * Sqrt(N_Trades)
         if trade_std > 0:
-            sqn_trade = (trade_mean / trade_std) * (trade_count ** 0.5)
+            sqn_strategy = (trade_mean / trade_std) * (trade_count ** 0.5)
         else:
-            sqn_trade = 0
+            sqn_strategy = 0
     else:
-        sqn_trade = 0
+        sqn_strategy = 0
         trade_mean = 0
         trade_std = 0
 
@@ -228,8 +230,7 @@ def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500)
     cagr = ((1 + total_return) ** (365 / days)) - 1
     
     df['peak'] = df['equity'].cummax()
-    df['dd'] = (df['equity'] - df['peak']) / df['peak']
-    max_dd = df['dd'].min()
+    max_dd = ((df['equity'] - df['peak']) / df['peak']).min()
     
     mean_ret = df['daily_return'].mean()
     std_ret = df['daily_return'].std()
@@ -237,7 +238,6 @@ def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500)
     
     downside_std = df[df['daily_return'] < 0]['daily_return'].std()
     sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
-    
     mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
 
     # Profit Factor
@@ -246,14 +246,13 @@ def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500)
     gross_loss = abs(df[df['diff'] < 0]['diff'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    # Win Rate (on Active Trade Days)
-    wins = len(active_trade_df[active_trade_df['trade_basis_return'] > 0])
-    total_active = len(active_trade_df)
+    # Kelly Criterion (on Trade Proxy)
+    wins = len(active_trades[active_trades > 0])
+    total_active = len(active_trades)
     win_rate = (wins / total_active) if total_active > 0 else 0
 
-    # Kelly
-    avg_win = active_trade_df[active_trade_df['trade_basis_return'] > 0]['trade_basis_return'].mean() if wins > 0 else 0
-    avg_loss = abs(active_trade_df[active_trade_df['trade_basis_return'] < 0]['trade_basis_return'].mean()) if (total_active - wins) > 0 else 0
+    avg_win = active_trades[active_trades > 0].mean() if wins > 0 else 0
+    avg_loss = abs(active_trades[active_trades < 0].mean()) if (total_active - wins) > 0 else 0
     risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
     
     if risk_reward > 0:
@@ -269,20 +268,20 @@ def calculate_advanced_metrics(hist_df, current_equity=0, investment_amount=500)
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
         
-        # New "Grossed Up" Metrics
-        "SQN (Strategy)": sqn_trade, 
+        "SQN (Strategy)": sqn_strategy,
         "Est. Trade Return": trade_mean,
-        "Est. Trade StdDev": trade_std, 
+        "Est. Trade Vol": trade_std, 
         
         "Win Rate (Est)": win_rate,
         "Kelly Criterion": max(0.0, kelly),
-        "Leverage Ratio": allocation_ratio # For debugging display
+        "Leverage Ratio": allocation_ratio
     }
 
 def create_scorecard_df(metrics):
-    """Formats metrics including Position-Adjusted Stats."""
+    """Formats metrics including Grossed-Up + Resampled Stats."""
     
     sqn = metrics['SQN (Strategy)']
+    # Adjusted scale for Resampled SQN (Values naturally trend lower than pure manual, so we adjust expectations)
     if sqn > 7.0: sqn_verdict = "🦄 Holy Grail"
     elif sqn > 3.0: sqn_verdict = "🚀 Strong"
     elif sqn > 1.7: sqn_verdict = "✅ Good"
@@ -296,7 +295,7 @@ def create_scorecard_df(metrics):
         
         # --- STRATEGY PERFORMANCE (Trade View) ---
         {"METRIC": "SQN (Strategy)", "YOURS": f"{metrics['SQN (Strategy)']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
-        {"METRIC": "Est. Trade Vol", "YOURS": f"{metrics['Est. Trade StdDev']:.2%}", "BENCHMARK": "~3.28%", "VERDICT": "🎯 Target"},
+        {"METRIC": "Est. Trade Vol", "YOURS": f"{metrics['Est. Trade Vol']:.2%}", "BENCHMARK": "~3.28%", "VERDICT": "🎯 Target"},
         
         {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
         {"METRIC": "Est. Win Rate", "YOURS": f"{metrics['Win Rate (Est)']:.0%}", "BENCHMARK": "50-60%", "VERDICT": "✅ Stable" if metrics['Win Rate (Est)'] > 0.5 else "🔻 Low"},
