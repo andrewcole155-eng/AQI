@@ -21,14 +21,15 @@ st.markdown("""
     <style>
     .terminal-box {
         background-color: #0e1117;
-        color: #00ff41;
+        color: #e0e0e0; /* CHANGED: Soft White for better readability */
         font-family: 'Courier New', Courier, monospace;
-        padding: 10px;
+        padding: 15px;
         border: 1px solid #333;
         border-radius: 5px;
         height: 600px;
         overflow-y: auto;
-        font-size: 12px;
+        font-size: 13px; /* Slightly larger text */
+        line-height: 1.5; /* Better spacing between lines */
         white-space: pre-wrap;
     }
     .stMetric {
