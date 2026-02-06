@@ -116,31 +116,42 @@ def get_portfolio_history(_api):
         return pd.DataFrame()
 
 def parse_latest_run_logic(logs):
+    """
+    Parses logs to extract:
+    1. Signals (Decisions)
+    2. Watchlist (High potential)
+    3. Neural Conviction (Latest confidence score for ALL tickers)
+    """
     signals = {}
-    watchlist = [] # New list for high-potential tickers
+    watchlist = [] 
+    neural_conviction = {} # NEW: Stores {Ticker: Confidence}
     last_run_timestamp = None
     last_run_str = "Unknown"
     
     ts_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})')
-    # New regex to find confidence: "Conf: 28.50%"
     conf_pattern = re.compile(r'Conf:\s*([\d\.]+)%?')
-
+    
+    # We iterate reversed to get the LATEST log entry for each ticker first
     for line in reversed(logs):
         ticker_match = re.search(r'\[([A-Z]+)\]', line)
         if ticker_match:
             ticker = ticker_match.group(1)
             
-            # extract confidence if present
+            # Extract confidence if present
             conf_match = conf_pattern.search(line)
             confidence = float(conf_match.group(1)) if conf_match else 0.0
+            
+            # NEW: Update Neural Conviction if not already set (since we are reading reversed)
+            if ticker not in neural_conviction and confidence > 0:
+                neural_conviction[ticker] = confidence
 
+            # Signal Logic (Same as before)
             if ticker not in signals:
                 clean_msg = line.split(f"[{ticker}]")[-1].strip()
                 if "FINAL SIGNAL" in line:
                     signals[ticker] = "✅ " + clean_msg
                 elif "Forcing HOLD" in line or "Margin" in line:
                     signals[ticker] = "⏸️ " + clean_msg
-                    # Add to watchlist if it was a near miss (high confidence but held)
                     if confidence > 0.20: 
                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1%}", "Status": "Wait"})
                 elif "Prediction" in line:
@@ -148,11 +159,11 @@ def parse_latest_run_logic(logs):
                 elif "Error" in line:
                     signals[ticker] = "❌ " + clean_msg
                 else:
-                    signals[ticker] = "ℹ️ " + clean_msg
-                    # Capture raw proposals for watchlist
+                    # Generic info, but capture raw proposals
                     if "RAW PROPOSAL" in line and confidence > 0.20:
                          watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1%}", "Status": "Watching"})
 
+        # Timestamp extraction
         if last_run_str == "Unknown":
             match = ts_pattern.search(line)
             if match:
@@ -162,9 +173,11 @@ def parse_latest_run_logic(logs):
                 except:
                     pass
 
-    # Deduplicate watchlist (keep latest)
+    # Deduplicate watchlist
     unique_watchlist = {v['Ticker']:v for v in watchlist}.values()
-    return last_run_str, last_run_timestamp, signals, list(unique_watchlist)
+    
+    # NEW: Return 5 items now (added neural_conviction)
+    return last_run_str, last_run_timestamp, signals, list(unique_watchlist), neural_conviction
 
 def calculate_drawdown(df):
     """Calculates the Drawdown (percentage drop from peak equity)."""
@@ -399,10 +412,9 @@ if account:
     
     # Process Logs
     logs = read_bot_logs()
-    # UPDATED LINE: Unpack the new 4th variable 'watchlist_data'
-    last_run_str, last_run_dt, parsed_signals, watchlist_data = parse_latest_run_logic(logs)
-
-    # ... (Keep your existing status logic here) ...
+    # UPDATED: Unpack 5 variables now
+    last_run_str, last_run_dt, parsed_signals, watchlist_data, conviction_data = parse_latest_run_logic(logs)
+    
     # Calculate "Time Since Last Run"
     status_label = "Bot Status"
     status_val = "Unknown"
@@ -427,16 +439,13 @@ st.divider()
 tab1, tab2, tab3 = st.tabs(["🧠 Bot Logic & Positions", "📜 Raw Logs", "📈 Performance"])
 
 with tab1:
-    # --- 1. MARKET PULSE SECTION ---
-    # Calculate simple sentiment from current positions (avg P/L)
+    # --- 1. MARKET PULSE ---
     avg_market_move = 0.0
     if positions:
-        # Access Dictionary keys ['key']
         avg_market_move = sum([float(p['unrealized_plpc']) for p in positions]) * 100
-        # Normalize to 0.0 - 1.0 scale (centered at 0.5)
-        sentiment_score = max(0.0, min(1.0, 0.5 + (avg_market_move / 5))) # /5 means +/- 2.5% move hits max
+        sentiment_score = max(0.0, min(1.0, 0.5 + (avg_market_move / 5)))
     else:
-        sentiment_score = 0.5 # Neutral
+        sentiment_score = 0.5
 
     st.markdown("### 🌡️ Market Pulse")
     s_col1, s_col2 = st.columns([5, 1])
@@ -449,7 +458,40 @@ with tab1:
 
     st.divider()
 
-    # --- 2. MAIN COLUMNS ---
+    # --- 2. NEURAL CONVICTION RADAR (NEW) ---
+    st.subheader("🧠 Neural Conviction Levels")
+    if conviction_data:
+        # Convert dict to DataFrame
+        df_conv = pd.DataFrame(list(conviction_data.items()), columns=['Ticker', 'Confidence'])
+        
+        # Create Bar Chart
+        fig_conf = px.bar(
+            df_conv, 
+            x='Ticker', 
+            y='Confidence', 
+            color='Confidence',
+            color_continuous_scale=['#2d2d2d', '#ffb000', '#00ff41'], # Dark -> Amber -> Green
+            range_y=[0, 100],
+            text_auto='.1f'
+        )
+        fig_conf.update_layout(
+            height=250, 
+            margin=dict(l=0, r=0, t=10, b=10),
+            xaxis_title=None, 
+            yaxis_title="Confidence %",
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font={'color': '#cccccc'},
+            yaxis=dict(showgrid=True, gridcolor='#333'),
+            xaxis=dict(showgrid=False)
+        )
+        st.plotly_chart(fig_conf, use_container_width=True)
+    else:
+        st.info("Waiting for first model run to populate conviction data...")
+
+    st.divider()
+
+    # --- 3. MAIN COLUMNS ---
     c1, c2 = st.columns([3, 4])
     
     with c1:
@@ -460,7 +502,7 @@ with tab1:
         else:
             st.caption("No high-confidence setups detected yet.")
 
-        st.subheader("🧠 Latest Brain Activity")
+        st.subheader("📝 Decision Log")
         if parsed_signals:
             sig_df = pd.DataFrame(list(parsed_signals.items()), columns=["Ticker", "Decision"])
             st.dataframe(sig_df, use_container_width=True, hide_index=True)
@@ -472,9 +514,8 @@ with tab1:
         if positions:
             pos_data = []
             for p in positions:
-                # Access Dictionary keys ['key']
                 pl_val = float(p['unrealized_pl'])
-                pl_pct = float(p['unrealized_plpc'])
+                pl_pct = float(p['unrealized_plpc']) * 100
                 pos_data.append({
                     "Ticker": p['symbol'], 
                     "Side": p['side'].upper(), 
@@ -485,7 +526,6 @@ with tab1:
                 })
             
             df_pos = pd.DataFrame(pos_data)
-            
             st.dataframe(
                 df_pos,
                 use_container_width=True,
@@ -498,6 +538,29 @@ with tab1:
             )
         else:
             st.caption("No active positions currently held.")
+
+        # --- NEW: RECENT ORDERS SECTION ---
+        st.divider()
+        st.subheader("📜 Recent Orders")
+        if orders:
+            order_data = []
+            for o in orders[:5]: # Last 5 orders
+                # Format time nicely
+                t = o['created_at']
+                t_fmt = t[5:16].replace('T', ' ') # Simple "MM-DD HH:MM" format
+                
+                order_data.append({
+                    "Time": t_fmt,
+                    "Ticker": o['symbol'],
+                    "Side": o['side'].upper(),
+                    "Qty": o['qty'],
+                    "Status": o['status'].title()
+                })
+            
+            df_orders = pd.DataFrame(order_data)
+            st.dataframe(df_orders, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No recent orders found.")
 
 with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
