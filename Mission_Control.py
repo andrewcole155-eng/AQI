@@ -137,6 +137,23 @@ def parse_latest_run_logic(logs):
 
     return last_run_str, last_run_timestamp, signals
 
+def calculate_drawdown(df):
+    """Calculates the Drawdown (percentage drop from peak equity)."""
+    df = df.copy()
+    df['peak'] = df['equity'].cummax()
+    df['drawdown'] = (df['equity'] - df['peak']) / df['peak']
+    return df
+
+def calculate_daily_returns(df):
+    """Calculates daily percentage change."""
+    df = df.copy()
+    df['daily_return'] = df['equity'].pct_change() * 100
+    # Color logic: Green for positive, Red for negative
+    df['color'] = df['daily_return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b')
+    return df
+
+
+
 # === DASHBOARD LOGIC ===
 api = init_alpaca()
 if not api: st.stop()
@@ -239,19 +256,86 @@ with tab2:
 
 with tab3:
     hist_df = get_portfolio_history(api)
+    
     if not hist_df.empty:
-        fig = px.area(hist_df, x='timestamp', y='equity', title="60-Day Equity Curve")
-        fig.update_layout(
-            margin=dict(l=0, r=0, t=60, b=0), 
-            xaxis_title=None, 
-            yaxis_title=None, 
-            showlegend=False,
-            # Dynamic Y-axis scaling
-            yaxis=dict(range=[min(hist_df['equity']) * 0.98, max(hist_df['equity']) * 1.02])
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        # --- PREPARE DATA ---
+        dd_df = calculate_drawdown(hist_df)
+        ret_df = calculate_daily_returns(hist_df)
+        
+        # --- ROW 1: EQUITY & DRAWDOWN ---
+        col_perf1, col_perf2 = st.columns(2)
+        
+        with col_perf1:
+            st.markdown("### 📈 Net Liquidity (30D)")
+            fig_eq = px.area(hist_df, x='timestamp', y='equity')
+            fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
+            fig_eq.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_title=None, yaxis_title=None, showlegend=False,
+                height=300,
+                # Dynamic scaling to make the chart look "full"
+                yaxis=dict(range=[min(hist_df['equity']) * 0.99, max(hist_df['equity']) * 1.01])
+            )
+            st.plotly_chart(fig_eq, use_container_width=True)
+
+        with col_perf2:
+            st.markdown("### 📉 Drawdown (Risk)")
+            fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
+            fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
+            fig_dd.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_title=None, yaxis_title=None, showlegend=False,
+                height=300,
+                yaxis=dict(tickformat=".1%") # Format as percentage
+            )
+            st.plotly_chart(fig_dd, use_container_width=True)
+
+        # --- ROW 2: VOLATILITY & ALLOCATION ---
+        st.divider()
+        col_perf3, col_perf4 = st.columns(2)
+
+        with col_perf3:
+            st.markdown("### 📊 Daily Returns (%)")
+            fig_ret = px.bar(ret_df, x='timestamp', y='daily_return')
+            fig_ret.update_traces(marker_color=ret_df['color'])
+            fig_ret.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_title=None, yaxis_title=None, showlegend=False,
+                height=300
+            )
+            st.plotly_chart(fig_ret, use_container_width=True)
+
+        with col_perf4:
+            st.markdown("### 🍰 Asset Allocation")
+            if positions:
+                # Prepare allocation data
+                alloc_data = []
+                total_market_val = 0
+                for p in positions:
+                    mv = float(p['qty']) * float(p['current_price'])
+                    total_market_val += mv
+                    alloc_data.append({"Ticker": p['symbol'], "Value": mv})
+                
+                # Add Cash to the pie
+                cash = float(account['cash'])
+                alloc_data.append({"Ticker": "CASH", "Value": cash})
+                
+                df_alloc = pd.DataFrame(alloc_data)
+                
+                fig_pie = px.pie(df_alloc, values='Value', names='Ticker', hole=0.4)
+                fig_pie.update_traces(textinfo='percent+label')
+                fig_pie.update_layout(
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    showlegend=True,
+                    height=300,
+                    legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.1)
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("No positions held. Portfolio is 100% Cash.")
+
     else:
-        st.write("No history data available.")
+        st.write("No history data available yet.")
 
 # === AUTO REFRESH LOOP ===
 if auto_refresh:
