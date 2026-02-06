@@ -444,14 +444,13 @@ with tab3:
     if not hist_df.empty and account:
         current_equity = float(account['equity'])
         
-        # --- CALCULATIONS (Simplified) ---
+        # --- CALCULATIONS (Simplified & Clean) ---
         metrics = calculate_advanced_metrics(hist_df)
-        
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
 
-        # --- SECTION 1: THE SCORECARD ---
+        # --- SECTION 1: SCORECARD ---
         st.markdown("### 🏆 Strategy Scorecard")
         st.dataframe(
             scorecard_df,
@@ -466,17 +465,16 @@ with tab3:
         )
         st.divider()
 
-        # --- SECTION 2: CHARTS ---
+        # --- SECTION 2: PERFORMANCE CHARTS ---
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
-            st.markdown("### 📈 Equity Curve (Live)")
+            st.markdown("### 📈 Equity Curve")
             fig_eq = px.area(hist_df, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
             fig_eq.update_layout(
                 margin=dict(l=0, r=0, t=10, b=0),
                 xaxis_title=None, yaxis_title=None, showlegend=False,
-                height=300,
-                yaxis=dict(range=[min(hist_df['equity']) * 0.99, max(hist_df['equity']) * 1.01])
+                height=300
             )
             st.plotly_chart(fig_eq, use_container_width=True)
 
@@ -495,103 +493,123 @@ with tab3:
         # --- SECTION 3: FUTURE PROJECTIONS ---
         st.divider()
         st.markdown(f"### 🔮 Future Projections (Based on {current_cagr:.1%} CAGR)")
-        
         if not proj_df.empty:
-            c_proj1, c_proj2 = st.columns([2, 1])
-            with c_proj1:
+            c_p1, c_p2 = st.columns([2, 1])
+            with c_p1:
                 fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
                 fig_proj.update_traces(line_width=3)
                 fig_proj.update_layout(
                     margin=dict(l=0, r=0, t=30, b=0),
-                    xaxis_title=None, yaxis_title=None,
-                    height=350,
+                    xaxis_title=None, yaxis_title=None, height=350,
                     legend=dict(orientation="h", y=1.1, x=0)
                 )
                 st.plotly_chart(fig_proj, use_container_width=True)
-            with c_proj2:
-                st.dataframe(
-                    proj_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Date": st.column_config.DateColumn("Target Date", format="MMMM YYYY"),
-                        "Projected Value": st.column_config.NumberColumn("Est. Value", format="$%.2f"),
-                        "Timeline": st.column_config.TextColumn("Phase")
-                    }
-                )
+            with c_p2:
+                st.dataframe(proj_df, use_container_width=True, hide_index=True)
 
-        # --- SECTION 4: CONSISTENCY HEATMAP & DISTRIBUTION ---
+        # --- SECTION 4: DEEP QUANT ANALYSIS (NEW) ---
+        st.divider()
+        st.subheader("🔬 Quant Lab Analysis")
+        
+        # Prepare Data
+        q_df = hist_df.copy()
+        q_df['daily_ret_pct'] = q_df['equity'].pct_change() * 100
+        q_df['Day'] = q_df['timestamp'].dt.day_name()
+        
+        # 1. Rolling Volatility (Risk Radar)
+        # 30-Day Rolling Std Dev (Annualized)
+        q_df['vol_30'] = q_df['daily_ret_pct'].rolling(30).std() * (252**0.5)
+        
+        col_q1, col_q2 = st.columns(2)
+        
+        with col_q1:
+            st.markdown("### 🌊 Rolling Risk (Volatility)")
+            if not q_df['vol_30'].dropna().empty:
+                fig_vol = px.line(q_df, x='timestamp', y='vol_30', labels={'vol_30': 'Annualized Vol (%)'})
+                fig_vol.update_traces(line_color='#ffb000') # Amber color
+                fig_vol.add_hline(y=q_df['vol_30'].mean(), line_dash="dot", annotation_text="Avg Risk")
+                fig_vol.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(fig_vol, use_container_width=True)
+                st.caption("Spikes indicate chaotic market phases.")
+            else:
+                st.info("Need 30 days of data for volatility analysis.")
+
+        with col_q2:
+            st.markdown("### 📅 Day-of-Week Performance")
+            # Calculate Avg Return per Day
+            day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+            day_perf = q_df.groupby('Day')['daily_ret_pct'].mean().reindex(day_order)
+            
+            fig_day = px.bar(
+                x=day_perf.index, 
+                y=day_perf.values, 
+                color=day_perf.values,
+                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
+                labels={'x': 'Day', 'y': 'Avg Return (%)'}
+            )
+            fig_day.update_layout(height=300, showlegend=False, margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig_day, use_container_width=True)
+            st.caption("Identify if specific days are dragging you down.")
+
+        # 3. Extremes (Hall of Fame)
+        st.markdown("### 🎢 Market Extremes")
+        col_ex1, col_ex2 = st.columns(2)
+        
+        with col_ex1:
+            st.caption("🏆 Top 3 Best Days")
+            best = q_df.nlargest(3, 'daily_ret_pct')[['timestamp', 'daily_ret_pct']]
+            st.dataframe(
+                best, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "timestamp": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                    "daily_ret_pct": st.column_config.NumberColumn("Gain", format="+%.2f%%")
+                }
+            )
+
+        with col_ex2:
+            st.caption("💀 Top 3 Worst Days")
+            worst = q_df.nsmallest(3, 'daily_ret_pct')[['timestamp', 'daily_ret_pct']]
+            st.dataframe(
+                worst, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "timestamp": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                    "daily_ret_pct": st.column_config.NumberColumn("Loss", format="%.2f%%")
+                }
+            )
+
+        # --- SECTION 5: HEATMAP & DISTRIBUTION (Existing) ---
         st.divider()
         col_deep1, col_deep2 = st.columns(2)
-
         with col_deep1:
-            st.markdown("### 📅 Monthly Performance Heatmap")
+            st.markdown("### 📅 Monthly Heatmap")
+            # (Reuse your existing Heatmap logic here)
             hm_df = hist_df.copy()
             hm_df['Year'] = hm_df['timestamp'].dt.year
-            hm_df['Month'] = hm_df['timestamp'].dt.month_name()
-            # Calculate monthly return
+            hm_df['Month'] = hm_df['timestamp'].dt.strftime('%b')
             monthly_ret = hm_df.set_index('timestamp')['equity'].resample('ME').last().pct_change() * 100
-            
             if not monthly_ret.empty:
                 m_df = pd.DataFrame(monthly_ret).reset_index()
                 m_df['Year'] = m_df['timestamp'].dt.year
-                m_df['Month'] = m_df['timestamp'].dt.strftime('%b') 
+                m_df['Month'] = m_df['timestamp'].dt.strftime('%b')
                 m_df['Return'] = m_df['equity']
-                
                 heatmap_data = m_df.pivot(index='Year', columns='Month', values='Return')
-                month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                heatmap_data = heatmap_data.reindex(columns=month_order)
-                
-                fig_hm = px.imshow(
-                    heatmap_data,
-                    labels=dict(x="Month", y="Year", color="Return (%)"),
-                    x=heatmap_data.columns, y=heatmap_data.index,
-                    color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
-                    color_continuous_midpoint=0, text_auto='.1f'
-                )
+                heatmap_data = heatmap_data.reindex(columns=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])
+                fig_hm = px.imshow(heatmap_data, text_auto='.1f', color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'], color_continuous_midpoint=0)
                 fig_hm.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
                 st.plotly_chart(fig_hm, use_container_width=True)
-            else:
-                st.info("Not enough data for monthly analysis.")
 
         with col_deep2:
-            st.markdown("### 🔔 Daily Return Distribution")
-            rets = hist_df['equity'].pct_change().dropna() * 100
-            
-            fig_hist = px.histogram(
-                rets, x="equity", nbins=30,
-                labels={'equity': 'Daily Return (%)'},
-                color_discrete_sequence=['#00ff41']
-            )
-            mean_ret = rets.mean()
-            fig_hist.add_vline(x=mean_ret, line_dash="dash", line_color="white", annotation_text="Avg")
-            fig_hist.update_layout(
-                bargap=0.1, showlegend=False, height=300,
-                margin=dict(l=0, r=0, t=0, b=0), yaxis_title="Frequency"
-            )
+            st.markdown("### 🔔 Return Distribution")
+            # (Reuse your existing Histogram logic here)
+            fig_hist = px.histogram(q_df, x="daily_ret_pct", nbins=30, labels={'daily_ret_pct': 'Return (%)'}, color_discrete_sequence=['#00ff41'])
+            fig_hist.add_vline(x=q_df['daily_ret_pct'].mean(), line_dash="dash", line_color="white")
+            fig_hist.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
             st.plotly_chart(fig_hist, use_container_width=True)
 
-        # --- SECTION 5: ASSET PERFORMANCE TREEMAP ---
-        st.divider()
-        st.markdown("### 📊 Performance by Asset")
-        if positions:
-            pos_data = []
-            for p in positions:
-                pos_data.append({
-                    "Ticker": p['symbol'],
-                    "Return (%)": float(p['unrealized_plpc']) * 100,
-                    "Value": float(p['market_value'])
-                })
-            df_pos_perf = pd.DataFrame(pos_data)
-            fig_tree = px.treemap(
-                df_pos_perf, path=['Ticker'], values='Value', color='Return (%)',
-                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
-                color_continuous_midpoint=0
-            )
-            fig_tree.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
-            st.plotly_chart(fig_tree, use_container_width=True)
-        else:
-            st.info("No active positions to analyze.")
     else:
         st.write("No history data available yet.")
 
