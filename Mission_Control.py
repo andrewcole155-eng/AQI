@@ -21,7 +21,7 @@ st.markdown("""
     <style>
     .terminal-box {
         background-color: #0e1117;
-        color: #e0e0e0; /* CHANGED: Soft White for better readability */
+        color: #ffb000; /* CHANGED: Soft White for better readability */
         font-family: 'Courier New', Courier, monospace;
         padding: 15px;
         border: 1px solid #333;
