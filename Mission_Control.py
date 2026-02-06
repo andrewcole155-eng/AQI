@@ -101,31 +101,42 @@ def get_portfolio_history(_api):
 
 def parse_latest_run_logic(logs):
     signals = {}
+    watchlist = [] # New list for high-potential tickers
     last_run_timestamp = None
     last_run_str = "Unknown"
     
-    # Regex to find timestamp YYYY-MM-DD HH:MM:SS
     ts_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})')
+    # New regex to find confidence: "Conf: 28.50%"
+    conf_pattern = re.compile(r'Conf:\s*([\d\.]+)%?')
 
     for line in reversed(logs):
-        # 1. Parse Logic
         ticker_match = re.search(r'\[([A-Z]+)\]', line)
         if ticker_match:
             ticker = ticker_match.group(1)
+            
+            # extract confidence if present
+            conf_match = conf_pattern.search(line)
+            confidence = float(conf_match.group(1)) if conf_match else 0.0
+
             if ticker not in signals:
                 clean_msg = line.split(f"[{ticker}]")[-1].strip()
                 if "FINAL SIGNAL" in line:
                     signals[ticker] = "✅ " + clean_msg
                 elif "Forcing HOLD" in line or "Margin" in line:
                     signals[ticker] = "⏸️ " + clean_msg
+                    # Add to watchlist if it was a near miss (high confidence but held)
+                    if confidence > 0.20: 
+                        watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1%}", "Status": "Wait"})
                 elif "Prediction" in line:
                     signals[ticker] = "🤔 " + clean_msg
                 elif "Error" in line:
                     signals[ticker] = "❌ " + clean_msg
                 else:
                     signals[ticker] = "ℹ️ " + clean_msg
+                    # Capture raw proposals for watchlist
+                    if "RAW PROPOSAL" in line and confidence > 0.20:
+                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1%}", "Status": "Watching"})
 
-        # 2. Find Last Timestamp
         if last_run_str == "Unknown":
             match = ts_pattern.search(line)
             if match:
@@ -135,7 +146,9 @@ def parse_latest_run_logic(logs):
                 except:
                     pass
 
-    return last_run_str, last_run_timestamp, signals
+    # Deduplicate watchlist (keep latest)
+    unique_watchlist = {v['Ticker']:v for v in watchlist}.values()
+    return last_run_str, last_run_timestamp, signals, list(unique_watchlist)
 
 def calculate_drawdown(df):
     """Calculates the Drawdown (percentage drop from peak equity)."""
@@ -176,10 +189,11 @@ if account:
     col2.metric("Day P/L", f"${daily_pl_abs:,.2f}")
     col3.metric("Buying Power", f"${buying_power:,.2f}")
     
-    # (Rest of the log logic remains the same...)
+    # Process Logs
     logs = read_bot_logs()
-    last_run_str, last_run_dt, parsed_signals = parse_latest_run_logic(logs)
-    
+    # UPDATED LINE: Unpack the new 4th variable 'watchlist_data'
+    last_run_str, last_run_dt, parsed_signals, watchlist_data = parse_latest_run_logic(logs)
+
     # ... (Keep your existing status logic here) ...
     # Calculate "Time Since Last Run"
     status_label = "Bot Status"
@@ -205,10 +219,39 @@ st.divider()
 tab1, tab2, tab3 = st.tabs(["🧠 Bot Logic & Positions", "📜 Raw Logs", "📈 Performance"])
 
 with tab1:
+    # --- 1. MARKET PULSE SECTION ---
+    # Calculate simple sentiment from current positions (avg P/L)
+    avg_market_move = 0.0
+    if positions:
+        avg_market_move = sum([float(p['unrealized_plpc']) for p in positions]) * 100
+        # Normalize to 0.0 - 1.0 scale (centered at 0.5)
+        sentiment_score = max(0.0, min(1.0, 0.5 + (avg_market_move / 5))) # /5 means +/- 2.5% move hits max
+    else:
+        sentiment_score = 0.5 # Neutral
+
+    st.markdown("### 🌡️ Market Pulse")
+    s_col1, s_col2 = st.columns([5, 1])
+    with s_col1:
+        st.progress(sentiment_score)
+    with s_col2:
+        if avg_market_move > 0.5: st.success("BULLISH")
+        elif avg_market_move < -0.5: st.error("BEARISH")
+        else: st.warning("NEUTRAL")
+
+    st.divider()
+
+    # --- 2. MAIN COLUMNS ---
     c1, c2 = st.columns([3, 4])
     
     with c1:
-        st.subheader("Latest Brain Activity")
+        st.subheader("🔭 Opportunity Watchlist")
+        if watchlist_data:
+            wl_df = pd.DataFrame(watchlist_data)
+            st.dataframe(wl_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No high-confidence setups detected yet.")
+
+        st.subheader("🧠 Latest Brain Activity")
         if parsed_signals:
             sig_df = pd.DataFrame(list(parsed_signals.items()), columns=["Ticker", "Decision"])
             st.dataframe(sig_df, use_container_width=True, hide_index=True)
@@ -216,11 +259,10 @@ with tab1:
             st.info("No signals parsed from recent logs.")
 
     with c2:
-        st.subheader("Active Portfolio")
+        st.subheader("💼 Active Portfolio")
         if positions:
             pos_data = []
             for p in positions:
-                # UPDATE: Access Dictionary keys ['key']
                 pl_val = float(p['unrealized_pl'])
                 pl_pct = float(p['unrealized_plpc'])
                 pos_data.append({
@@ -234,7 +276,6 @@ with tab1:
             
             df_pos = pd.DataFrame(pos_data)
             
-            # (Rest of the dataframe display logic remains the same...)
             st.dataframe(
                 df_pos,
                 use_container_width=True,
@@ -247,8 +288,17 @@ with tab1:
             )
         else:
             st.caption("No active positions currently held.")
-
-
+        
+        # --- EMERGENCY BRAKE ---
+        st.divider()
+        if st.button("🚨 EMERGENCY STOP (Liquidate All)", type="primary"):
+            try:
+                api.close_all_positions(cancel_orders=True)
+                st.toast("⚠️ KILL SIGNAL SENT: Closing all positions...", icon="🔥")
+                time.sleep(2)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to execute Emergency Stop: {e}")
 
 with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
