@@ -92,14 +92,22 @@ def get_account_data(_api):
 @st.cache_data(ttl=300)
 def get_portfolio_history(_api):
     try:
-        # UPDATE: Changed '1M' to 'all' to fetch entire account history
+        # Fetch ALL history first
         history = _api.get_portfolio_history(period='all', timeframe='1D')
         
         df = pd.DataFrame({'timestamp': history.timestamp, 'equity': history.equity})
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+        
+        # --- UPDATE: Filter for Start Date (24 May 2025) ---
+        start_date = pd.Timestamp("2025-05-24")
+        df = df[df['timestamp'] >= start_date].copy()
+        
+        # Sort to ensure calculations are correct
+        df = df.sort_values('timestamp')
+        
         return df
     except Exception as e:
-        # st.error(f"History Error: {e}") # Uncomment for debugging
+        # st.error(f"History Error: {e}") 
         return pd.DataFrame()
 
 def parse_latest_run_logic(logs):
