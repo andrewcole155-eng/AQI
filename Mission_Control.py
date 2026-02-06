@@ -185,6 +185,9 @@ def calculate_advanced_metrics(hist_df):
     df['daily_return'] = df['equity'].pct_change()
     df['daily_pl_abs'] = df['equity'].diff()
     
+    # Filter for ACTIVE days only (removes flat days to fix SQN)
+    active_df = df[abs(df['daily_return']) > 0.0001].copy() # Filter noise < 0.01%
+    
     # --- BASIC METRICS ---
     days = (df['timestamp'].max() - df['timestamp'].min()).days
     if days < 1: days = 1
@@ -214,8 +217,15 @@ def calculate_advanced_metrics(hist_df):
     gross_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    if std_ret > 0 and total > 0:
-        sqn = (mean_ret / std_ret) * (total ** 0.5)
+    # UPDATED SQN CALCULATION (Uses Active Days Only)
+    if not active_df.empty:
+        active_mean = active_df['daily_return'].mean()
+        active_std = active_df['daily_return'].std()
+        active_count = len(active_df)
+        if active_std > 0:
+            sqn = (active_mean / active_std) * (active_count ** 0.5)
+        else:
+            sqn = 0
     else:
         sqn = 0
 
@@ -230,8 +240,7 @@ def calculate_advanced_metrics(hist_df):
     else:
         kelly = 0
     
-    # We cap negative Kelly at 0
-    kelly_pct = max(0.0, kelly)
+    kelly_pct = max(0.0, kelly) # Cap negative Kelly at 0
 
     return {
         "CAGR": cagr,
@@ -507,7 +516,6 @@ with tab3:
                 margin=dict(l=0, r=0, t=10, b=0),
                 xaxis_title=None, yaxis_title=None, showlegend=False,
                 height=300,
-                # Dynamic scaling
                 yaxis=dict(range=[min(hist_df['equity']) * 0.99, max(hist_df['equity']) * 1.01])
             )
             st.plotly_chart(fig_eq, use_container_width=True)
@@ -565,12 +573,12 @@ with tab3:
         with col_deep1:
             st.markdown("### 📅 Monthly Performance Heatmap")
             
-            # Heatmap Data Logic
+            # Prepare Data for Heatmap
             hm_df = hist_df.copy()
             hm_df['Year'] = hm_df['timestamp'].dt.year
             hm_df['Month'] = hm_df['timestamp'].dt.month_name()
-            # Calculate monthly return
-            monthly_ret = hm_df.set_index('timestamp')['equity'].resample('M').last().pct_change() * 100
+            # Calculate monthly return by resampling
+            monthly_ret = hm_df.set_index('timestamp')['equity'].resample('ME').last().pct_change() * 100
             
             if not monthly_ret.empty:
                 m_df = pd.DataFrame(monthly_ret).reset_index()
@@ -581,7 +589,7 @@ with tab3:
                 # Pivot: Index=Year, Cols=Month
                 heatmap_data = m_df.pivot(index='Year', columns='Month', values='Return')
                 
-                # Sort Columns
+                # Reorder columns (Jan -> Dec)
                 month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
                 heatmap_data = heatmap_data.reindex(columns=month_order)
                 
@@ -623,36 +631,6 @@ with tab3:
                 yaxis_title="Frequency"
             )
             st.plotly_chart(fig_hist, use_container_width=True)
-
-        # --- SECTION 5: ASSET PERFORMANCE HEATMAP ---
-        st.divider()
-        st.markdown("### 📊 Performance by Asset")
-        if positions:
-            pos_data = []
-            for p in positions:
-                # Access Dictionary keys ['key']
-                pos_data.append({
-                    "Ticker": p['symbol'],
-                    "Return (%)": float(p['unrealized_plpc']) * 100,
-                    "Value": float(p['market_value'])
-                })
-            df_pos_perf = pd.DataFrame(pos_data)
-            
-            fig_tree = px.treemap(
-                df_pos_perf, 
-                path=['Ticker'], 
-                values='Value',
-                color='Return (%)',
-                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
-                color_continuous_midpoint=0
-            )
-            fig_tree.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
-            st.plotly_chart(fig_tree, use_container_width=True)
-        else:
-            st.info("No active positions to analyze.")
-
-    else:
-        st.write("No history data available yet.")
 
 # === AUTO REFRESH LOOP ===
 if auto_refresh:
