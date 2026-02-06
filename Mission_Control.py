@@ -183,88 +183,54 @@ def calculate_advanced_metrics(hist_df):
     # Prepare data
     df = hist_df.copy()
     df['daily_return'] = df['equity'].pct_change()
-    df['daily_pl_abs'] = df['equity'].diff()
+    df['daily_return_pct'] = df['daily_return'] * 100
     
-    # --- EXISTING METRICS ---
+    # 1. CAGR (Annualized Return) - Extrapolated from available data
     days = (df['timestamp'].max() - df['timestamp'].min()).days
     if days < 1: days = 1
     total_return = (df['equity'].iloc[-1] - df['equity'].iloc[0]) / df['equity'].iloc[0]
     cagr = ((1 + total_return) ** (365 / days)) - 1
     
+    # 2. Max Drawdown
     df['peak'] = df['equity'].cummax()
     df['dd'] = (df['equity'] - df['peak']) / df['peak']
     max_dd = df['dd'].min()
     
+    # 3. Sharpe Ratio (Assume 0% risk-free rate for simplicity)
     mean_ret = df['daily_return'].mean()
     std_ret = df['daily_return'].std()
     sharpe = (mean_ret / std_ret) * (252 ** 0.5) if std_ret > 0 else 0
     
+    # 4. Sortino Ratio (Downside deviation only)
     downside_std = df[df['daily_return'] < 0]['daily_return'].std()
     sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
     
+    # 5. Daily Win Rate
     wins = len(df[df['daily_return'] > 0])
-    losses = len(df[df['daily_return'] < 0])
-    total = len(df) - 1 
+    total = len(df) - 1 # Minus first day (NaN)
     win_rate = (wins / total) if total > 0 else 0
     
+    # 6. MAR Ratio (CAGR / Max Drawdown)
     mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
-
-    # --- NEW METRICS (Using Daily Data as Proxy) ---
     
-    # 1. Profit Factor (Gross Wins / Gross Losses)
-    gross_profit = df[df['daily_pl_abs'] > 0]['daily_pl_abs'].sum()
-    gross_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].sum())
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
-
-    # 2. SQN (System Quality Number) - Portfolio Version
-    # SQN = (Expectancy / StdDev) * Sqrt(N)
-    # Ideally per trade, but per day works for general health
-    if std_ret > 0 and total > 0:
-        sqn = (mean_ret / std_ret) * (total ** 0.5)
-    else:
-        sqn = 0
-
-    # 3. Expectancy (Average Daily Win / Average Daily Loss)
-    avg_win = df[df['daily_pl_abs'] > 0]['daily_pl_abs'].mean() if wins > 0 else 0
-    avg_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].mean()) if losses > 0 else 0
-    risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
-
     return {
         "CAGR": cagr,
         "Max Drawdown": max_dd,
         "Sharpe Ratio": sharpe,
         "Sortino Ratio": sortino,
         "Win Rate (Days)": win_rate,
-        "MAR Ratio": mar,
-        "Profit Factor": profit_factor,
-        "SQN": sqn,
-        "Risk:Reward (Daily)": risk_reward
+        "MAR Ratio": mar
     }
 
 def create_scorecard_df(metrics):
-    """Formats metrics into a DataFrame matching the visual style."""
-    
-    # Define SQN Verdict
-    sqn = metrics['SQN']
-    if sqn > 7.0: sqn_verdict = "🦄 Holy Grail"
-    elif sqn > 3.0: sqn_verdict = "🚀 Strong"
-    elif sqn > 1.7: sqn_verdict = "✅ Good"
-    else: sqn_verdict = "😐 Average"
-
+    """Formats metrics into a DataFrame matching the requested visual style."""
     data = [
-        # --- RETURN & RISK ---
         {"METRIC": "CAGR (Est.)", "YOURS": f"{metrics['CAGR']:.1%}", "BENCHMARK": "> 20%", "VERDICT": "🏆 Elite" if metrics['CAGR'] > 0.2 else "😐 Std"},
-        {"METRIC": "Max Drawdown", "YOURS": f"{metrics['Max Drawdown']:.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics['Max Drawdown']) < 0.15 else "⚠️ High Risk"},
-        
-        # --- EFFICIENCY ---
         {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics['Sharpe Ratio']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics['Sharpe Ratio'] > 1.5 else "😐 Std"},
-        {"METRIC": "Sortino Ratio", "YOURS": f"{metrics['Sortino Ratio']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "💎 Strong" if metrics['Sortino Ratio'] > 2.0 else "😐 Std"},
+        {"METRIC": "Max Drawdown", "YOURS": f"{metrics['Max Drawdown']:.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics['Max Drawdown']) < 0.15 else "⚠️ High Risk"},
         {"METRIC": "MAR Ratio", "YOURS": f"{metrics['MAR Ratio']:.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics['MAR Ratio'] > 1.0 else "😐 Std"},
-        
-        # --- NEW METRICS ---
-        {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
-        {"METRIC": "System Quality (SQN)", "YOURS": f"{metrics['SQN']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
-        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Days)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Days)'] > 0.5 else "🔻 Low"},
+        {"METRIC": "Sortino Ratio", "YOURS": f"{metrics['Sortino Ratio']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "💎 Strong" if metrics['Sortino Ratio'] > 2.0 else "😐 Std"},
+        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Days)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Days)'] > 0.5 else "🔻 Low"}
     ]
     return pd.DataFrame(data)
 
