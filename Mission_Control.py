@@ -89,14 +89,17 @@ def get_account_data(_api):
     except:
         return None, [], []
 
-@st.cache_data(ttl=300) # History changes slowly, cache longer
+@st.cache_data(ttl=300)
 def get_portfolio_history(_api):
     try:
-        history = _api.get_portfolio_history(period='1M', timeframe='1D')
+        # UPDATE: Changed '1M' to 'all' to fetch entire account history
+        history = _api.get_portfolio_history(period='all', timeframe='1D')
+        
         df = pd.DataFrame({'timestamp': history.timestamp, 'equity': history.equity})
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
         return df
-    except:
+    except Exception as e:
+        # st.error(f"History Error: {e}") # Uncomment for debugging
         return pd.DataFrame()
 
 def parse_latest_run_logic(logs):
