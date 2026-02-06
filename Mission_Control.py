@@ -177,7 +177,7 @@ def calculate_daily_returns(df):
     return df
 
 def calculate_advanced_metrics(hist_df):
-    """Calculates institutional metrics from the equity curve."""
+    """Calculates institutional metrics using Active Days for Raw SQN."""
     if hist_df.empty: return {}
     
     # Prepare data
@@ -185,8 +185,9 @@ def calculate_advanced_metrics(hist_df):
     df['daily_return'] = df['equity'].pct_change()
     df['daily_pl_abs'] = df['equity'].diff()
     
-    # Filter for ACTIVE days only (removes flat days to fix SQN)
-    active_df = df[abs(df['daily_return']) > 0.0001].copy() # Filter noise < 0.01%
+    # --- FILTER FOR ACTIVE DAYS (Fixes SQN) ---
+    # We only count days where the equity actually moved (not flat/weekend/holidays)
+    active_df = df[abs(df['daily_return']) > 0.00001].copy()
     
     # --- BASIC METRICS ---
     days = (df['timestamp'].max() - df['timestamp'].min()).days
@@ -205,11 +206,6 @@ def calculate_advanced_metrics(hist_df):
     downside_std = df[df['daily_return'] < 0]['daily_return'].std()
     sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
     
-    wins = len(df[df['daily_return'] > 0])
-    losses = len(df[df['daily_return'] < 0])
-    total = len(df) - 1 
-    win_rate = (wins / total) if total > 0 else 0
-    
     mar = (cagr / abs(max_dd)) if max_dd != 0 else 0
 
     # --- ADVANCED METRICS ---
@@ -217,11 +213,13 @@ def calculate_advanced_metrics(hist_df):
     gross_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].sum())
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
-    # UPDATED SQN CALCULATION (Uses Active Days Only)
+    # --- SQN CALCULATION (RAW / ACTIVE) ---
+    # SQN = (Average Active Return / Std Dev of Active Returns) * Sqrt(Active Days)
     if not active_df.empty:
         active_mean = active_df['daily_return'].mean()
         active_std = active_df['daily_return'].std()
         active_count = len(active_df)
+        
         if active_std > 0:
             sqn = (active_mean / active_std) * (active_count ** 0.5)
         else:
@@ -229,40 +227,43 @@ def calculate_advanced_metrics(hist_df):
     else:
         sqn = 0
 
-    avg_win = df[df['daily_pl_abs'] > 0]['daily_pl_abs'].mean() if wins > 0 else 0
-    avg_loss = abs(df[df['daily_pl_abs'] < 0]['daily_pl_abs'].mean()) if losses > 0 else 0
+    # --- KELLY CRITERION ---
+    wins = len(active_df[active_df['daily_return'] > 0])
+    total_active = len(active_df)
+    win_rate = (wins / total_active) if total_active > 0 else 0
+
+    avg_win = active_df[active_df['daily_pl_abs'] > 0]['daily_pl_abs'].mean() if wins > 0 else 0
+    avg_loss = abs(active_df[active_df['daily_pl_abs'] < 0]['daily_pl_abs'].mean()) if (total_active - wins) > 0 else 0
     risk_reward = (avg_win / avg_loss) if avg_loss > 0 else 0
 
-    # --- KELLY CRITERION ---
-    # Win Rate - ((1 - Win Rate) / Risk Reward Ratio)
     if risk_reward > 0:
         kelly = win_rate - ((1 - win_rate) / risk_reward)
     else:
         kelly = 0
     
-    kelly_pct = max(0.0, kelly) # Cap negative Kelly at 0
+    kelly_pct = max(0.0, kelly)
 
     return {
         "CAGR": cagr,
         "Max Drawdown": max_dd,
         "Sharpe Ratio": sharpe,
         "Sortino Ratio": sortino,
-        "Win Rate (Days)": win_rate,
+        "Win Rate (Active)": win_rate,
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
         "SQN": sqn,
-        "Risk:Reward (Daily)": risk_reward,
+        "Risk:Reward": risk_reward,
         "Kelly Criterion": kelly_pct
     }
 
 def create_scorecard_df(metrics):
     """Formats metrics into a DataFrame matching the visual style."""
     
-    # Define SQN Verdict
+    # Define SQN Verdict (Scale adjusted for Raw SQN)
     sqn = metrics['SQN']
-    if sqn > 7.0: sqn_verdict = "🦄 Holy Grail"
-    elif sqn > 3.0: sqn_verdict = "🚀 Strong"
-    elif sqn > 1.7: sqn_verdict = "✅ Good"
+    if sqn > 10.0: sqn_verdict = "🦄 Holy Grail"
+    elif sqn > 7.0: sqn_verdict = "🚀 Elite"
+    elif sqn > 3.0: sqn_verdict = "✅ Strong"
     else: sqn_verdict = "😐 Average"
 
     data = [
@@ -278,7 +279,7 @@ def create_scorecard_df(metrics):
         # --- ADVANCED STATS ---
         {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
         {"METRIC": "System Quality (SQN)", "YOURS": f"{metrics['SQN']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": sqn_verdict},
-        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Days)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Days)'] > 0.5 else "🔻 Low"},
+        {"METRIC": "Active Win Rate", "YOURS": f"{metrics['Win Rate (Active)']:.0%}", "BENCHMARK": "50-60%", "VERDICT": "✅ Stable" if metrics['Win Rate (Active)'] > 0.5 else "🔻 Low"},
         
         # --- MONEY MANAGEMENT ---
         {"METRIC": "Kelly Criterion", "YOURS": f"{metrics['Kelly Criterion']:.1%}", "BENCHMARK": "5% - 20%", "VERDICT": "🔥 Aggr." if metrics['Kelly Criterion'] > 0.15 else "🛡️ Safe"},
@@ -487,7 +488,6 @@ with tab3:
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
         
-        # Current Live Equity for projections
         current_equity = float(account['equity'])
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
 
@@ -506,7 +506,7 @@ with tab3:
         )
         st.divider()
 
-        # --- SECTION 2: EQUITY & RISK CHARTS ---
+        # --- SECTION 2: CHARTS ---
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
             st.markdown("### 📈 Equity Curve (Live)")
@@ -538,9 +538,7 @@ with tab3:
         
         if not proj_df.empty:
             c_proj1, c_proj2 = st.columns([2, 1])
-            
             with c_proj1:
-                # Growth Chart
                 fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
                 fig_proj.update_traces(line_width=3)
                 fig_proj.update_layout(
@@ -550,9 +548,7 @@ with tab3:
                     legend=dict(orientation="h", y=1.1, x=0)
                 )
                 st.plotly_chart(fig_proj, use_container_width=True)
-                
             with c_proj2:
-                # Projection Table
                 st.dataframe(
                     proj_df,
                     use_container_width=True,
@@ -563,44 +559,35 @@ with tab3:
                         "Timeline": st.column_config.TextColumn("Phase")
                     }
                 )
-        else:
-            st.warning("Not enough data to generate projections.")
 
-        # --- SECTION 4: CONSISTENCY ANALYSIS (NEW) ---
+        # --- SECTION 4: CONSISTENCY HEATMAP & DISTRIBUTION ---
         st.divider()
         col_deep1, col_deep2 = st.columns(2)
 
         with col_deep1:
             st.markdown("### 📅 Monthly Performance Heatmap")
-            
-            # Prepare Data for Heatmap
             hm_df = hist_df.copy()
             hm_df['Year'] = hm_df['timestamp'].dt.year
             hm_df['Month'] = hm_df['timestamp'].dt.month_name()
-            # Calculate monthly return by resampling
+            # Calculate monthly return
             monthly_ret = hm_df.set_index('timestamp')['equity'].resample('ME').last().pct_change() * 100
             
             if not monthly_ret.empty:
                 m_df = pd.DataFrame(monthly_ret).reset_index()
                 m_df['Year'] = m_df['timestamp'].dt.year
-                m_df['Month'] = m_df['timestamp'].dt.strftime('%b') # Jan, Feb
+                m_df['Month'] = m_df['timestamp'].dt.strftime('%b') 
                 m_df['Return'] = m_df['equity']
                 
-                # Pivot: Index=Year, Cols=Month
                 heatmap_data = m_df.pivot(index='Year', columns='Month', values='Return')
-                
-                # Reorder columns (Jan -> Dec)
                 month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
                 heatmap_data = heatmap_data.reindex(columns=month_order)
                 
                 fig_hm = px.imshow(
                     heatmap_data,
                     labels=dict(x="Month", y="Year", color="Return (%)"),
-                    x=heatmap_data.columns,
-                    y=heatmap_data.index,
+                    x=heatmap_data.columns, y=heatmap_data.index,
                     color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
-                    color_continuous_midpoint=0,
-                    text_auto='.1f'
+                    color_continuous_midpoint=0, text_auto='.1f'
                 )
                 fig_hm.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
                 st.plotly_chart(fig_hm, use_container_width=True)
@@ -609,28 +596,44 @@ with tab3:
 
         with col_deep2:
             st.markdown("### 🔔 Daily Return Distribution")
-            
-            # Histogram Data Logic
             rets = hist_df['equity'].pct_change().dropna() * 100
             
             fig_hist = px.histogram(
-                rets, 
-                x="equity", 
-                nbins=30,
+                rets, x="equity", nbins=30,
                 labels={'equity': 'Daily Return (%)'},
                 color_discrete_sequence=['#00ff41']
             )
-            
-            # Mean Line
             mean_ret = rets.mean()
             fig_hist.add_vline(x=mean_ret, line_dash="dash", line_color="white", annotation_text="Avg")
-            
             fig_hist.update_layout(
                 bargap=0.1, showlegend=False, height=300,
-                margin=dict(l=0, r=0, t=0, b=0),
-                yaxis_title="Frequency"
+                margin=dict(l=0, r=0, t=0, b=0), yaxis_title="Frequency"
             )
             st.plotly_chart(fig_hist, use_container_width=True)
+
+        # --- SECTION 5: ASSET PERFORMANCE TREEMAP ---
+        st.divider()
+        st.markdown("### 📊 Performance by Asset")
+        if positions:
+            pos_data = []
+            for p in positions:
+                pos_data.append({
+                    "Ticker": p['symbol'],
+                    "Return (%)": float(p['unrealized_plpc']) * 100,
+                    "Value": float(p['market_value'])
+                })
+            df_pos_perf = pd.DataFrame(pos_data)
+            fig_tree = px.treemap(
+                df_pos_perf, path=['Ticker'], values='Value', color='Return (%)',
+                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
+                color_continuous_midpoint=0
+            )
+            fig_tree.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
+            st.plotly_chart(fig_tree, use_container_width=True)
+        else:
+            st.info("No active positions to analyze.")
+    else:
+        st.write("No history data available yet.")
 
 # === AUTO REFRESH LOOP ===
 if auto_refresh:
