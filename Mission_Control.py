@@ -223,6 +223,7 @@ with tab1:
     # Calculate simple sentiment from current positions (avg P/L)
     avg_market_move = 0.0
     if positions:
+        # Access Dictionary keys ['key']
         avg_market_move = sum([float(p['unrealized_plpc']) for p in positions]) * 100
         # Normalize to 0.0 - 1.0 scale (centered at 0.5)
         sentiment_score = max(0.0, min(1.0, 0.5 + (avg_market_move / 5))) # /5 means +/- 2.5% move hits max
@@ -263,6 +264,7 @@ with tab1:
         if positions:
             pos_data = []
             for p in positions:
+                # Access Dictionary keys ['key']
                 pl_val = float(p['unrealized_pl'])
                 pl_pct = float(p['unrealized_plpc'])
                 pos_data.append({
@@ -288,18 +290,7 @@ with tab1:
             )
         else:
             st.caption("No active positions currently held.")
-        
-        # --- EMERGENCY BRAKE ---
-        st.divider()
-        if st.button("🚨 EMERGENCY STOP (Liquidate All)", type="primary"):
-            try:
-                api.close_all_positions(cancel_orders=True)
-                st.toast("⚠️ KILL SIGNAL SENT: Closing all positions...", icon="🔥")
-                time.sleep(2)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to execute Emergency Stop: {e}")
-
+            
 with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
     st.markdown(f'<div class="terminal-box">{"".join(logs)}</div>', unsafe_allow_html=True)
