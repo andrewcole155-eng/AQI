@@ -364,7 +364,7 @@ def calculate_future_projections(hist_df, current_equity):
 
 def calculate_3d_physics(df):
     """
-    Calculates Velocity (Daily Return) and Acceleration (Rate of Change of Return).
+    Calculates Velocity, Acceleration, and Jerk (The 3rd Derivative).
     """
     phys_df = df.copy()
     
@@ -372,12 +372,15 @@ def calculate_3d_physics(df):
     phys_df['velocity'] = phys_df['equity'].pct_change() * 100
     
     # 2. Acceleration (Change in Velocity)
-    # If yesterday was +1% and today is +3%, acceleration is +2%
     phys_df['acceleration'] = phys_df['velocity'].diff()
     
-    # 3. Smooth it slightly to remove noise (optional, makes chart prettier)
+    # 3. Jerk (Change in Acceleration - The "Whiplash" factor)
+    phys_df['jerk'] = phys_df['acceleration'].diff()
+
+    # Smooth slightly to reduce noise
     phys_df['vel_smooth'] = phys_df['velocity'].rolling(3).mean()
     phys_df['acc_smooth'] = phys_df['acceleration'].rolling(3).mean()
+    phys_df['jerk_smooth'] = phys_df['jerk'].rolling(3).mean()
     
     return phys_df.dropna()
 
@@ -692,41 +695,42 @@ with tab3:
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: 3D PHYSICS LAB (NEW!) ---
+# --- SECTION 3: 3D PHYSICS LAB (UPDATED) ---
         st.divider()
         st.subheader("🧊 Angel 3D Trajectory (Phase Space)")
-        st.caption("Visualizing the 'Physics' of your returns. **Z-Axis** is Acceleration (Momentum Shift). Peaks show explosive growth; valleys show rapid deceleration.")
+        st.info("Dimensions: **X**=Time, **Y**=Velocity (Return), **Z**=Acceleration. **Color/Size** = JERK (Market Shock).")
 
         if not phys_df.empty:
-            # Create 3D Line/Scatter
+            # Create 3D Line/Scatter with JERK as the 4th Dimension
             fig_3d = go.Figure(data=[go.Scatter3d(
                 x=phys_df['timestamp'],
-                y=phys_df['velocity'],      # Speed (Daily Return)
-                z=phys_df['acceleration'],  # Force (Change in Return)
+                y=phys_df['velocity'],      
+                z=phys_df['acceleration'],  
                 mode='lines+markers',
                 marker=dict(
-                    size=4,
-                    color=phys_df['velocity'], # Color by Speed
-                    colorscale='Turbo',        # Cool futuristic neon colors
+                    size=abs(phys_df['jerk']) * 5 + 2, # Size based on Shock magnitude
+                    color=phys_df['jerk'],             # Color based on Shock direction
+                    colorscale='Turbo',
                     opacity=0.8,
-                    colorbar=dict(title="Daily Return %")
+                    colorbar=dict(title="Jerk (Shock)")
                 ),
                 line=dict(
-                    color='rgba(255, 255, 255, 0.5)', # Faint white connecting line
+                    color='rgba(255, 255, 255, 0.3)', 
                     width=2
                 ),
                 hovertemplate =
                 '<b>Date</b>: %{x|%Y-%m-%d}<br>' +
-                '<b>Velocity (Ret)</b>: %{y:.2f}%<br>' +
-                '<b>Accel (Delta)</b>: %{z:.2f}%<br>' +
+                '<b>Vel</b>: %{y:.2f}%<br>' +
+                '<b>Acc</b>: %{z:.2f}%<br>' +
+                '<b>Jerk</b>: %{marker.color:.2f}<br>' +
                 '<extra></extra>'
             )])
 
             fig_3d.update_layout(
                 scene=dict(
                     xaxis_title='Time',
-                    yaxis_title='Velocity (Return %)',
-                    zaxis_title='Acceleration (Delta %)',
+                    yaxis_title='Velocity (Return)',
+                    zaxis_title='Accel (Momentum)',
                     xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
                     yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
                     zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
@@ -734,25 +738,39 @@ with tab3:
                 paper_bgcolor='rgba(0,0,0,0)',
                 font=dict(color="#cccccc"),
                 margin=dict(l=0, r=0, t=0, b=0),
-                height=600  # Taller for 3D interaction
+                height=600 
             )
             st.plotly_chart(fig_3d, use_container_width=True)
         else:
-            st.info("Not enough data points for 3D Physics analysis yet.")
+            st.info("Not enough data points for Physics analysis.")
 
-        # --- SECTION 4: FUTURE PROJECTIONS ---
+        # --- SECTION 4: FUTURE PROJECTIONS (UPDATED) ---
         st.divider()
-        st.markdown(f"### 🔮 Future Projections")
+        # UPDATED: Header now includes the dynamic CAGR percentage
+        st.markdown(f"### 🔮 Future Projections (CAGR: {current_cagr:.1%})")
+        
         if not proj_df.empty:
             c_p1, c_p2 = st.columns([2, 1])
             with c_p1:
                 fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
                 fig_proj.update_traces(line_width=3)
-                fig_proj.update_layout(margin=dict(l=0, r=0, t=30, b=0), xaxis_title=None, yaxis_title=None, height=350, legend=dict(orientation="h", y=1.1, x=0))
+                fig_proj.update_layout(
+                    margin=dict(l=0, r=0, t=30, b=0), 
+                    xaxis_title=None, 
+                    yaxis_title=None, 
+                    height=350, 
+                    legend=dict(orientation="h", y=1.1, x=0)
+                )
                 st.plotly_chart(fig_proj, use_container_width=True)
             with c_p2:
-                st.dataframe(proj_df, use_container_width=True, hide_index=True)
-
+                st.dataframe(
+                    proj_df, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Projected Value": st.column_config.NumberColumn(format="$%.2f")
+                    }
+                )
     else:
         st.write("No history data available yet.")
 
