@@ -434,9 +434,9 @@ if account:
     
     # Process Logs
     logs = read_bot_logs()
-    # UPDATED: Unpack 5 variables now
+    # UPDATED: You must unpack the 5th variable here for the chart to work
     last_run_str, last_run_dt, parsed_signals, watchlist_data, conviction_data = parse_latest_run_logic(logs)
-    
+
     # Calculate "Time Since Last Run"
     status_label = "Bot Status"
     status_val = "Unknown"
