@@ -197,6 +197,7 @@ def calculate_daily_returns(df):
 def calculate_seasonality(df):
     """
     Analyzes performance by Day of Week and Month of Year.
+    Returns Avg Return and Win Rate for both.
     """
     s_df = df.copy()
     s_df['daily_return'] = s_df['equity'].pct_change() * 100
@@ -206,16 +207,17 @@ def calculate_seasonality(df):
     
     # 1. Day of Week Stats
     day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
-    # Group by Day, calculate Mean Return and Win Rate
     day_stats = s_df.groupby('Day')['daily_return'].agg(
         Avg_Return='mean',
-        Win_Rate=lambda x: (x > 0).sum() / len(x) if len(x) > 0 else 0
+        Win_Rate=lambda x: (x > 0).sum() / len(x) * 100 if len(x) > 0 else 0
     ).reindex(day_order)
     
-    # 2. Monthly Stats
-    # Group by Month, calculate Total Return for that month
-    monthly_stats = s_df.groupby(['Month_Num', 'Month'])['daily_return'].sum().reset_index()
-    monthly_stats = monthly_stats.sort_values('Month_Num').set_index('Month')['daily_return']
+    # 2. Monthly Stats (Group by Month Name to see seasonality across years)
+    # We calculate the stats based on DAILY returns within that month
+    monthly_stats = s_df.groupby(['Month_Num', 'Month'])['daily_return'].agg(
+        Avg_Return='mean', # Average Daily Return in this month
+        Win_Rate=lambda x: (x > 0).sum() / len(x) * 100 if len(x) > 0 else 0
+    ).reset_index().sort_values('Month_Num').set_index('Month')
     
     return day_stats, monthly_stats
 
@@ -721,52 +723,92 @@ with tab3:
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: TIME INTELLIGENCE (NEW) ---
+        # --- SECTION 3: TIME INTELLIGENCE (DUAL AXIS) ---
         st.divider()
         st.subheader("⏳ Time Intelligence (Seasonality)")
+        st.caption("Bars = Average Return (Left Axis). Lines = Win Rate % (Right Axis).")
         
         c_time1, c_time2 = st.columns(2)
         
+        # --- CHART 1: DAY OF WEEK ---
         with c_time1:
-            st.markdown("**📅 Day of Week Performance**")
-            # Bar chart for Days: Height = Return, Color = Win Rate
-            fig_dow = px.bar(
-                x=day_stats.index, 
+            st.markdown("**📅 Day of Week**")
+            
+            # Create Dual-Axis Chart
+            fig_dow = go.Figure()
+            
+            # Bar: Average Return
+            fig_dow.add_trace(go.Bar(
+                x=day_stats.index,
                 y=day_stats['Avg_Return'],
-                color=day_stats['Win_Rate'],
-                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
-                labels={'y': 'Avg Daily Return (%)', 'x': 'Day', 'color': 'Win Rate'},
-                text=day_stats['Win_Rate'].apply(lambda x: f"{x:.0%}") # Show Win Rate on bar
-            )
+                name='Avg Return',
+                marker_color=day_stats['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'),
+                yaxis='y1'
+            ))
+            
+            # Line: Win Rate
+            fig_dow.add_trace(go.Scatter(
+                x=day_stats.index,
+                y=day_stats['Win_Rate'],
+                name='Win Rate %',
+                mode='lines+markers+text',
+                text=day_stats['Win_Rate'].apply(lambda x: f"{x:.0f}%"), # Label points
+                textposition="top center",
+                line=dict(color='#ffb000', width=3),
+                yaxis='y2'
+            ))
+
+            # Layout Updates
             fig_dow.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)',
+                yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
+                yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
+                showlegend=False,
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="#cccccc"),
-                yaxis=dict(showgrid=True, gridcolor='#333'),
-                xaxis_title=None,
-                height=300,
-                coloraxis_showscale=False
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc")
             )
             st.plotly_chart(fig_dow, use_container_width=True)
 
+        # --- CHART 2: MONTH OF YEAR ---
         with c_time2:
-            st.markdown("**🗓️ Month of Year Performance**")
-            # Bar chart for Months
-            fig_moy = px.bar(
-                x=monthly_stats.index, 
-                y=monthly_stats.values,
-                color=monthly_stats.values,
-                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
-                labels={'y': 'Total Monthly Return (%)', 'x': 'Month'}
-            )
+            st.markdown("**🗓️ Month of Year**")
+            
+            # Create Dual-Axis Chart
+            fig_moy = go.Figure()
+            
+            # Bar: Average Return
+            fig_moy.add_trace(go.Bar(
+                x=monthly_stats.index,
+                y=monthly_stats['Avg_Return'],
+                name='Avg Return',
+                marker_color=monthly_stats['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'),
+                yaxis='y1'
+            ))
+            
+            # Line: Win Rate
+            fig_moy.add_trace(go.Scatter(
+                x=monthly_stats.index,
+                y=monthly_stats['Win_Rate'],
+                name='Win Rate %',
+                mode='lines+markers+text',
+                text=monthly_stats['Win_Rate'].apply(lambda x: f"{x:.0f}%"),
+                textposition="top center",
+                line=dict(color='#ffb000', width=3),
+                yaxis='y2'
+            ))
+
+            # Layout Updates
             fig_moy.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)',
+                yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
+                yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
+                showlegend=False,
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="#cccccc"),
-                yaxis=dict(showgrid=True, gridcolor='#333'),
-                xaxis_title=None,
-                height=300,
-                coloraxis_showscale=False
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc")
             )
             st.plotly_chart(fig_moy, use_container_width=True)
 
