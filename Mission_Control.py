@@ -362,6 +362,25 @@ def calculate_future_projections(hist_df, current_equity):
         
     return pd.DataFrame(projections), cagr
 
+def calculate_3d_physics(df):
+    """
+    Calculates Velocity (Daily Return) and Acceleration (Rate of Change of Return).
+    """
+    phys_df = df.copy()
+    
+    # 1. Velocity (Daily Return %)
+    phys_df['velocity'] = phys_df['equity'].pct_change() * 100
+    
+    # 2. Acceleration (Change in Velocity)
+    # If yesterday was +1% and today is +3%, acceleration is +2%
+    phys_df['acceleration'] = phys_df['velocity'].diff()
+    
+    # 3. Smooth it slightly to remove noise (optional, makes chart prettier)
+    phys_df['vel_smooth'] = phys_df['velocity'].rolling(3).mean()
+    phys_df['acc_smooth'] = phys_df['acceleration'].rolling(3).mean()
+    
+    return phys_df.dropna()
+
 def format_log_line(line):
     """Formats a single log line to look like VS Code syntax highlighting."""
     # 1. Safety escape for HTML
@@ -592,10 +611,13 @@ with tab3:
         dd_df = calculate_drawdown(hist_df)
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
         
+        # Physics Calculation for 3D Plot
+        phys_df = calculate_3d_physics(hist_df)
+        
         # Calculate Institutional Score
         inst_score = calculate_institutional_score(metrics)
 
-        # --- SECTION 1: THE INSTITUTIONAL GAUGE (NEW) ---
+        # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
         col_gauge, col_scorecard = st.columns([1, 2])
         
         with col_gauge:
@@ -612,21 +634,16 @@ with tab3:
                     'borderwidth': 2,
                     'bordercolor': "#333",
                     'steps': [
-                        {'range': [0, 50], 'color': 'rgba(255, 75, 75, 0.3)'},   # Retail (Red)
-                        {'range': [50, 80], 'color': 'rgba(255, 176, 0, 0.3)'}, # Pro (Amber)
-                        {'range': [80, 100], 'color': 'rgba(0, 255, 65, 0.3)'}  # Inst (Green)
+                        {'range': [0, 50], 'color': 'rgba(255, 75, 75, 0.3)'},
+                        {'range': [50, 80], 'color': 'rgba(255, 176, 0, 0.3)'},
+                        {'range': [80, 100], 'color': 'rgba(0, 255, 65, 0.3)'}
                     ],
-                    'threshold': {
-                        'line': {'color': "white", 'width': 4},
-                        'thickness': 0.75,
-                        'value': inst_score
-                    }
+                    'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': inst_score}
                 }
             ))
             fig_gauge.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=10), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
             st.plotly_chart(fig_gauge, use_container_width=True)
             
-            # Text Verdict
             if inst_score > 80:
                 st.markdown("<div style='text-align: center; color: #00ff41; font-weight: bold;'>🚀 INSTITUTIONAL GRADE</div>", unsafe_allow_html=True)
             elif inst_score > 50:
@@ -635,7 +652,7 @@ with tab3:
                 st.markdown("<div style='text-align: center; color: #ff4b4b; font-weight: bold;'>🎲 DEGEN / RETAIL</div>", unsafe_allow_html=True)
 
         with col_scorecard:
-            st.markdown("### 📊 Metrics Breakdown - Since 24 May 2025")
+            st.markdown("### 📊 Metrics Breakdown")
             st.dataframe(
                 scorecard_df,
                 use_container_width=True,
@@ -646,7 +663,7 @@ with tab3:
                     "BENCHMARK": st.column_config.TextColumn("Target", width="small"),
                     "VERDICT": st.column_config.TextColumn("Verdict", width="small"),
                 },
-                height=280 # Match gauge height
+                height=280
             )
 
         st.divider()
@@ -655,27 +672,18 @@ with tab3:
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
             st.markdown("### 📈 Equity Curve")
-            
-            # Calculate the max value dynamically so the top doesn't get cut off
             max_equity = hist_df['equity'].max()
-            
             fig_eq = px.area(hist_df, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
-            
             fig_eq.update_layout(
                 margin=dict(l=0, r=0, t=10, b=0),
                 xaxis_title=None,
                 yaxis_title=None,
                 showlegend=False,
                 height=300,
-                # FIX: Set explicit numbers for both Min and Max
-                yaxis=dict(
-                    range=[3700, max_equity * 1.02], 
-                    rangemode="normal"  # This is crucial: stops it from forcing 0
-                )
+                yaxis=dict(range=[3700, max_equity * 1.02], rangemode="normal")
             )
             st.plotly_chart(fig_eq, use_container_width=True)
-
 
         with col_perf2:
             st.markdown("### 📉 Risk (Drawdown)")
@@ -684,36 +692,53 @@ with tab3:
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: QUANT LAB (Analysis) ---
+        # --- SECTION 3: 3D PHYSICS LAB (NEW!) ---
         st.divider()
-        st.subheader("🔬 Quant Lab Analysis")
-        
-        # Prepare Data for Quant Lab
-        q_df = hist_df.copy()
-        q_df['daily_ret_pct'] = q_df['equity'].pct_change() * 100
-        q_df['Day'] = q_df['timestamp'].dt.day_name()
-        q_df['vol_30'] = q_df['daily_ret_pct'].rolling(30).std() * (252**0.5) # Rolling Vol
-        
-        col_q1, col_q2 = st.columns(2)
-        
-        with col_q1:
-            st.markdown("### 🌊 Rolling Risk (Volatility)")
-            if not q_df['vol_30'].dropna().empty:
-                fig_vol = px.line(q_df, x='timestamp', y='vol_30', labels={'vol_30': 'Annualized Vol (%)'})
-                fig_vol.update_traces(line_color='#ffb000') 
-                fig_vol.add_hline(y=q_df['vol_30'].mean(), line_dash="dot", annotation_text="Avg Risk")
-                fig_vol.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
-                st.plotly_chart(fig_vol, use_container_width=True)
-            else:
-                st.info("Need 30 days of data for volatility analysis.")
+        st.subheader("🧊 Angel 3D Trajectory (Phase Space)")
+        st.caption("Visualizing the 'Physics' of your returns. **Z-Axis** is Acceleration (Momentum Shift). Peaks show explosive growth; valleys show rapid deceleration.")
 
-        with col_q2:
-            st.markdown("### 📅 Day-of-Week Performance")
-            day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
-            day_perf = q_df.groupby('Day')['daily_ret_pct'].mean().reindex(day_order)
-            fig_day = px.bar(x=day_perf.index, y=day_perf.values, color=day_perf.values, color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'])
-            fig_day.update_layout(height=300, showlegend=False, margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None)
-            st.plotly_chart(fig_day, use_container_width=True)
+        if not phys_df.empty:
+            # Create 3D Line/Scatter
+            fig_3d = go.Figure(data=[go.Scatter3d(
+                x=phys_df['timestamp'],
+                y=phys_df['velocity'],      # Speed (Daily Return)
+                z=phys_df['acceleration'],  # Force (Change in Return)
+                mode='lines+markers',
+                marker=dict(
+                    size=4,
+                    color=phys_df['velocity'], # Color by Speed
+                    colorscale='Turbo',        # Cool futuristic neon colors
+                    opacity=0.8,
+                    colorbar=dict(title="Daily Return %")
+                ),
+                line=dict(
+                    color='rgba(255, 255, 255, 0.5)', # Faint white connecting line
+                    width=2
+                ),
+                hovertemplate =
+                '<b>Date</b>: %{x|%Y-%m-%d}<br>' +
+                '<b>Velocity (Ret)</b>: %{y:.2f}%<br>' +
+                '<b>Accel (Delta)</b>: %{z:.2f}%<br>' +
+                '<extra></extra>'
+            )])
+
+            fig_3d.update_layout(
+                scene=dict(
+                    xaxis_title='Time',
+                    yaxis_title='Velocity (Return %)',
+                    zaxis_title='Acceleration (Delta %)',
+                    xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                    yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                    zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                ),
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc"),
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=600  # Taller for 3D interaction
+            )
+            st.plotly_chart(fig_3d, use_container_width=True)
+        else:
+            st.info("Not enough data points for 3D Physics analysis yet.")
 
         # --- SECTION 4: FUTURE PROJECTIONS ---
         st.divider()
