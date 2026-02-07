@@ -194,6 +194,31 @@ def calculate_daily_returns(df):
     df['color'] = df['daily_return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b')
     return df
 
+def calculate_seasonality(df):
+    """
+    Analyzes performance by Day of Week and Month of Year.
+    """
+    s_df = df.copy()
+    s_df['daily_return'] = s_df['equity'].pct_change() * 100
+    s_df['Day'] = s_df['timestamp'].dt.day_name()
+    s_df['Month'] = s_df['timestamp'].dt.month_name()
+    s_df['Month_Num'] = s_df['timestamp'].dt.month
+    
+    # 1. Day of Week Stats
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+    # Group by Day, calculate Mean Return and Win Rate
+    day_stats = s_df.groupby('Day')['daily_return'].agg(
+        Avg_Return='mean',
+        Win_Rate=lambda x: (x > 0).sum() / len(x) if len(x) > 0 else 0
+    ).reindex(day_order)
+    
+    # 2. Monthly Stats
+    # Group by Month, calculate Total Return for that month
+    monthly_stats = s_df.groupby(['Month_Num', 'Month'])['daily_return'].sum().reset_index()
+    monthly_stats = monthly_stats.sort_values('Month_Num').set_index('Month')['daily_return']
+    
+    return day_stats, monthly_stats
+
 def calculate_advanced_metrics(hist_df):
     """Calculates strict Portfolio Metrics (No synthetic Trade Projections)."""
     if hist_df.empty: return {}
@@ -613,9 +638,10 @@ with tab3:
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
-        
-        # Physics Calculation for 3D Plot
         phys_df = calculate_3d_physics(hist_df)
+        
+        # NEW: Calculate Seasonality
+        day_stats, monthly_stats = calculate_seasonality(hist_df)
         
         # Calculate Institutional Score
         inst_score = calculate_institutional_score(metrics)
@@ -695,42 +721,82 @@ with tab3:
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
 
-# --- SECTION 3: 3D PHYSICS LAB (UPDATED) ---
+        # --- SECTION 3: TIME INTELLIGENCE (NEW) ---
+        st.divider()
+        st.subheader("⏳ Time Intelligence (Seasonality)")
+        
+        c_time1, c_time2 = st.columns(2)
+        
+        with c_time1:
+            st.markdown("**📅 Day of Week Performance**")
+            # Bar chart for Days: Height = Return, Color = Win Rate
+            fig_dow = px.bar(
+                x=day_stats.index, 
+                y=day_stats['Avg_Return'],
+                color=day_stats['Win_Rate'],
+                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
+                labels={'y': 'Avg Daily Return (%)', 'x': 'Day', 'color': 'Win Rate'},
+                text=day_stats['Win_Rate'].apply(lambda x: f"{x:.0%}") # Show Win Rate on bar
+            )
+            fig_dow.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc"),
+                yaxis=dict(showgrid=True, gridcolor='#333'),
+                xaxis_title=None,
+                height=300,
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_dow, use_container_width=True)
+
+        with c_time2:
+            st.markdown("**🗓️ Month of Year Performance**")
+            # Bar chart for Months
+            fig_moy = px.bar(
+                x=monthly_stats.index, 
+                y=monthly_stats.values,
+                color=monthly_stats.values,
+                color_continuous_scale=['#ff4b4b', '#1e1e1e', '#00ff41'],
+                labels={'y': 'Total Monthly Return (%)', 'x': 'Month'}
+            )
+            fig_moy.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc"),
+                yaxis=dict(showgrid=True, gridcolor='#333'),
+                xaxis_title=None,
+                height=300,
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_moy, use_container_width=True)
+
+        # --- SECTION 4: 3D PHYSICS LAB ---
         st.divider()
         st.subheader("🧊 Angel 3D Trajectory (Phase Space)")
         st.info("Dimensions: **X**=Time, **Y**=Velocity (Return), **Z**=Acceleration. **Color/Size** = JERK (Market Shock).")
 
         if not phys_df.empty:
-            # Create 3D Line/Scatter with JERK as the 4th Dimension
             fig_3d = go.Figure(data=[go.Scatter3d(
                 x=phys_df['timestamp'],
                 y=phys_df['velocity'],      
                 z=phys_df['acceleration'],  
                 mode='lines+markers',
                 marker=dict(
-                    size=abs(phys_df['jerk']) * 5 + 2, # Size based on Shock magnitude
-                    color=phys_df['jerk'],             # Color based on Shock direction
+                    size=abs(phys_df['jerk']) * 5 + 2, 
+                    color=phys_df['jerk'],             
                     colorscale='Turbo',
                     opacity=0.8,
-                    colorbar=dict(title="Jerk (Shock)")
+                    colorbar=dict(title="Jerk")
                 ),
-                line=dict(
-                    color='rgba(255, 255, 255, 0.3)', 
-                    width=2
-                ),
-                hovertemplate =
-                '<b>Date</b>: %{x|%Y-%m-%d}<br>' +
-                '<b>Vel</b>: %{y:.2f}%<br>' +
-                '<b>Acc</b>: %{z:.2f}%<br>' +
-                '<b>Jerk</b>: %{marker.color:.2f}<br>' +
-                '<extra></extra>'
+                line=dict(color='rgba(255, 255, 255, 0.3)', width=2),
+                hovertemplate = '<b>Date</b>: %{x|%Y-%m-%d}<br><b>Vel</b>: %{y:.2f}%<br><b>Acc</b>: %{z:.2f}%<br><b>Jerk</b>: %{marker.color:.2f}<extra></extra>'
             )])
 
             fig_3d.update_layout(
                 scene=dict(
                     xaxis_title='Time',
-                    yaxis_title='Velocity (Return)',
-                    zaxis_title='Accel (Momentum)',
+                    yaxis_title='Velocity',
+                    zaxis_title='Accel',
                     xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
                     yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
                     zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
@@ -744,9 +810,8 @@ with tab3:
         else:
             st.info("Not enough data points for Physics analysis.")
 
-        # --- SECTION 4: FUTURE PROJECTIONS (UPDATED) ---
+        # --- SECTION 5: FUTURE PROJECTIONS ---
         st.divider()
-        # UPDATED: Header now includes the dynamic CAGR percentage
         st.markdown(f"### 🔮 Future Projections (CAGR: {current_cagr:.1%})")
         
         if not proj_df.empty:
@@ -767,9 +832,7 @@ with tab3:
                     proj_df, 
                     use_container_width=True, 
                     hide_index=True,
-                    column_config={
-                        "Projected Value": st.column_config.NumberColumn(format="$%.2f")
-                    }
+                    column_config={"Projected Value": st.column_config.NumberColumn(format="$%.2f")}
                 )
     else:
         st.write("No history data available yet.")
