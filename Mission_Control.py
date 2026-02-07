@@ -104,7 +104,7 @@ def get_portfolio_history(_api):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
         
         # --- UPDATE: Filter for Start Date (24 May 2025) ---
-        start_date = pd.Timestamp("2025-05-24")
+        start_date = pd.Timestamp("2025-06-01")
         df = df[df['timestamp'] >= start_date].copy()
         
         # Sort to ensure calculations are correct
