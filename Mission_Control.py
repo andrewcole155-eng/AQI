@@ -9,6 +9,7 @@ import gspread
 from datetime import datetime, timedelta
 import pytz
 import plotly.graph_objects as go
+import numpy as np
 
 st.set_page_config(
     page_title="Angel V6 Mission Control",
@@ -114,6 +115,114 @@ def get_portfolio_history(_api):
     except Exception as e:
         # st.error(f"History Error: {e}") 
         return pd.DataFrame()
+
+import numpy as np # <--- ADD THIS TO TOP IMPORTS
+
+# ... [Keep your existing cache functions like read_bot_logs, etc.] ...
+
+# === NEW: INSTITUTIONAL METRIC CALCULATORS ===
+
+@st.cache_data(ttl=3600)
+def get_benchmark_data(_api, start_date):
+    """Fetches SPY (S&P 500) data to calculate Alpha vs Beta."""
+    try:
+        # Fetch SPY bars for the same timeframe
+        start_str = start_date.strftime('%Y-%m-%d')
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        
+        bars = _api.get_bars("SPY", tradeapi.TimeFrame.Day, start=start_str, end=today_str).df
+        
+        # Normalize timestamps to match portfolio history
+        bars = bars.reset_index()
+        if 'timestamp' in bars.columns:
+            bars['timestamp'] = pd.to_datetime(bars['timestamp']).dt.normalize()
+            
+        return bars[['timestamp', 'close']]
+    except Exception as e:
+        return pd.DataFrame()
+
+def calculate_alpha_beta_matrix(portfolio_df, benchmark_df):
+    """
+    Calculates Regime-Adjusted Alpha (Luck vs Skill).
+    Returns a DataFrame with Cumulative Raw Return vs Cumulative Pure Alpha.
+    """
+    if portfolio_df.empty or benchmark_df.empty:
+        return pd.DataFrame()
+
+    # 1. Prepare Dataframes
+    p_df = portfolio_df.copy()
+    p_df['timestamp'] = p_df['timestamp'].dt.normalize()
+    p_df = p_df.drop_duplicates(subset=['timestamp'], keep='last')
+    
+    b_df = benchmark_df.copy()
+    b_df = b_df.rename(columns={'close': 'bench_close'})
+    b_df = b_df.drop_duplicates(subset=['timestamp'], keep='last')
+    
+    # 2. Merge
+    merged = pd.merge(p_df, b_df, on='timestamp', how='inner').sort_values('timestamp')
+    
+    # 3. Calculate Daily Returns
+    merged['port_ret'] = merged['equity'].pct_change().fillna(0)
+    merged['bench_ret'] = merged['bench_close'].pct_change().fillna(0)
+    
+    # 4. Calculate Rolling Beta (60-Day Window)
+    window = 60
+    rolling_cov = merged['port_ret'].rolling(window).cov(merged['bench_ret'])
+    rolling_var = merged['bench_ret'].rolling(window).var()
+    merged['beta'] = rolling_cov / rolling_var
+    
+    # Fallback for early data (use static beta)
+    static_beta = merged['port_ret'].cov(merged['bench_ret']) / merged['bench_ret'].var()
+    merged['beta'] = merged['beta'].fillna(static_beta)
+    
+    # 5. Calculate "Pure Alpha" Return
+    # Alpha = Portfolio Return - (Beta * Market Return)
+    merged['alpha_ret'] = merged['port_ret'] - (merged['beta'] * merged['bench_ret'])
+    
+    # 6. Calculate Cumulative Growth for Plotting
+    merged['Raw Return'] = (1 + merged['port_ret']).cumprod() - 1
+    merged['Pure Alpha'] = (1 + merged['alpha_ret']).cumprod() - 1
+    merged['S&P 500'] = (1 + merged['bench_ret']).cumprod() - 1
+    
+    return merged
+
+def calculate_chaos_index(conviction_data):
+    """
+    Calculates the 'Chaos Index' based on Multi-Agent Conviction entropy.
+    High Entropy = Agents are guessing/conflicted (High Chaos).
+    Low Entropy = Agents are rigidly over-fitted (Low Chaos).
+    """
+    if not conviction_data:
+        return 50, "Waiting for Data"
+        
+    scores = np.array(list(conviction_data.values()))
+    
+    # Normalize scores to probabilities
+    if scores.sum() == 0:
+        return 100, "Max Entropy (Guessing)"
+        
+    probs = scores / scores.sum()
+    
+    # Shannon Entropy: -Sum(p * log(p))
+    entropy = -np.sum(probs * np.log(probs + 1e-9))
+    
+    # Normalize to 0-100 Gauge
+    # Max entropy for 8 stocks ≈ 2.08. We scale accordingly.
+    max_possible_entropy = -np.log(1/8) 
+    chaos_score = (entropy / max_possible_entropy) * 100
+    
+    # Clamp
+    chaos_score = min(100, max(0, chaos_score))
+    
+    # Interpret
+    if chaos_score > 85:
+        label = "High (Divergent)"
+    elif chaos_score < 35:
+        label = "Low (Convergent)"
+    else:
+        label = "Healthy (Stable)"
+        
+    return chaos_score, label
 
 def parse_latest_run_logic(logs):
     """
@@ -635,188 +744,117 @@ with tab3:
     if not hist_df.empty and account:
         current_equity = float(account['equity'])
         
-        # --- CALCULATIONS ---
+        # --- PREPARE DATA ---
         metrics = calculate_advanced_metrics(hist_df)
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
         phys_df = calculate_3d_physics(hist_df)
-        
-        # NEW: Calculate Seasonality
-        day_stats, monthly_stats = calculate_seasonality(hist_df)
-        
-        # Calculate Institutional Score
         inst_score = calculate_institutional_score(metrics)
-
-        # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
-        col_gauge, col_scorecard = st.columns([1, 2])
         
-        with col_gauge:
+        # NEW: Fetch Benchmark & Calculate Alpha
+        start_dt = hist_df['timestamp'].min()
+        bench_df = get_benchmark_data(api, start_dt)
+        alpha_df = calculate_alpha_beta_matrix(hist_df, bench_df)
+        
+        # NEW: Calculate Chaos
+        chaos_val, chaos_label = calculate_chaos_index(conviction_data)
+
+        # --- ROW 1: INSTITUTIONAL DASHBOARD ---
+        st.markdown("### 🏛️ Institutional Performance Modules")
+        
+        # Layout: Gauge | Chaos | Alpha Matrix
+        col_inst1, col_inst2, col_inst3 = st.columns([1, 1, 3])
+        
+        with col_inst1:
+            # 1. STRATEGY HEALTH GAUGE
             fig_gauge = go.Figure(go.Indicator(
                 mode = "gauge+number",
                 value = inst_score,
-                domain = {'x': [0, 1], 'y': [0, 1]},
-                title = {'text': "Strategy Grade", 'font': {'size': 20, 'color': '#e0e0e0'}},
-                number = {'suffix': "/100", 'font': {'color': '#e0e0e0'}},
+                title = {'text': "Inst. Grade", 'font': {'size': 16, 'color': '#888'}},
+                number = {'suffix': "/100"},
                 gauge = {
-                    'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "#333"},
+                    'axis': {'range': [None, 100], 'tickwidth': 1},
                     'bar': {'color': "#00ff41" if inst_score > 80 else "#ffb000"},
                     'bgcolor': "#1e1e1e",
-                    'borderwidth': 2,
-                    'bordercolor': "#333",
-                    'steps': [
-                        {'range': [0, 50], 'color': 'rgba(255, 75, 75, 0.3)'},
-                        {'range': [50, 80], 'color': 'rgba(255, 176, 0, 0.3)'},
-                        {'range': [80, 100], 'color': 'rgba(0, 255, 65, 0.3)'}
-                    ],
                     'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': inst_score}
                 }
             ))
-            fig_gauge.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=10), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
+            fig_gauge.update_layout(height=220, margin=dict(l=20, r=20, t=30, b=10), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
             st.plotly_chart(fig_gauge, use_container_width=True)
-            
-            if inst_score > 80:
-                st.markdown("<div style='text-align: center; color: #00ff41; font-weight: bold;'>🚀 INSTITUTIONAL GRADE</div>", unsafe_allow_html=True)
-            elif inst_score > 50:
-                st.markdown("<div style='text-align: center; color: #ffb000; font-weight: bold;'>⚡ PROFESSIONAL RETAIL</div>", unsafe_allow_html=True)
-            else:
-                st.markdown("<div style='text-align: center; color: #ff4b4b; font-weight: bold;'>🎲 DEGEN / RETAIL</div>", unsafe_allow_html=True)
 
-        with col_scorecard:
-            st.markdown("### 📊 Metrics Breakdown")
+        with col_inst2:
+            # 2. CHAOS INDEX (Model Health)
+            # Logic: We want "Healthy" in the middle. Too low = Overfit. Too high = Random.
+            fig_chaos = go.Figure(go.Indicator(
+                mode = "gauge+number+delta",
+                value = chaos_val,
+                title = {'text': "Chaos Index", 'font': {'size': 16, 'color': '#888'}},
+                delta = {'reference': 50, 'increasing': {'color': "#ff4b4b"}, 'decreasing': {'color': "#00ff41"}}, # Lower chaos usually better until 0
+                gauge = {
+                    'axis': {'range': [None, 100]},
+                    'bar': {'color': "#569cd6"}, # Blue for "Neutral/Computing"
+                    'steps': [
+                        {'range': [0, 20], 'color': 'rgba(255, 75, 75, 0.3)'},  # Overfit (Red)
+                        {'range': [20, 80], 'color': 'rgba(0, 255, 65, 0.1)'},   # Healthy (Green Tint)
+                        {'range': [80, 100], 'color': 'rgba(255, 75, 75, 0.3)'}  # Random (Red)
+                    ],
+                    'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': chaos_val}
+                }
+            ))
+            fig_chaos.update_layout(height=220, margin=dict(l=20, r=20, t=30, b=10), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
+            st.plotly_chart(fig_chaos, use_container_width=True)
+            st.caption(f"Status: **{chaos_label}**")
+
+        with col_inst3:
+            # 3. ALPHA VS BETA MATRIX
+            st.markdown("**Regime-Adjusted Alpha (Luck vs Skill)**")
+            if not alpha_df.empty:
+                # Transform for Plotly
+                plot_alpha = alpha_df.melt(id_vars=['timestamp'], value_vars=['Raw Return', 'Pure Alpha', 'S&P 500'], var_name='Metric', value_name='Return')
+                
+                fig_alpha = px.line(plot_alpha, x='timestamp', y='Return', color='Metric', 
+                                    color_discrete_map={'Raw Return': '#00ff41', 'Pure Alpha': '#00BFFF', 'S&P 500': '#444'})
+                
+                fig_alpha.update_layout(
+                    height=240, 
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title=None, yaxis_title=None,
+                    legend=dict(orientation="h", y=1.1, x=0),
+                    yaxis=dict(tickformat=".0%"),
+                    hovermode="x unified"
+                )
+                st.plotly_chart(fig_alpha, use_container_width=True)
+            else:
+                st.info("Insufficient data to calculate Alpha/Beta.")
+
+        st.divider()
+
+        # --- ROW 2: TRADITIONAL METRICS ---
+        c_perf1, c_perf2 = st.columns([2, 1])
+        with c_perf1:
+            st.subheader("📊 Performance Scorecard")
             st.dataframe(
                 scorecard_df,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "METRIC": st.column_config.TextColumn("Metric", width="medium"),
-                    "YOURS": st.column_config.TextColumn("Your Bot", width="small"),
-                    "BENCHMARK": st.column_config.TextColumn("Target", width="small"),
+                    "YOURS": st.column_config.TextColumn("Angel Bot", width="small"),
                     "VERDICT": st.column_config.TextColumn("Verdict", width="small"),
-                },
-                height=280
+                }
             )
-
-        st.divider()
-
-        # --- SECTION 2: CHARTS ---
-        col_perf1, col_perf2 = st.columns(2)
-        with col_perf1:
-            st.markdown("### 📈 Equity Curve")
-            max_equity = hist_df['equity'].max()
-            fig_eq = px.area(hist_df, x='timestamp', y='equity')
-            fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
-            fig_eq.update_layout(
-                margin=dict(l=0, r=0, t=10, b=0),
-                xaxis_title=None,
-                yaxis_title=None,
-                showlegend=False,
-                height=300,
-                yaxis=dict(range=[3700, max_equity * 1.02], rangemode="normal")
-            )
-            st.plotly_chart(fig_eq, use_container_width=True)
-
-        with col_perf2:
-            st.markdown("### 📉 Risk (Drawdown)")
+        with c_perf2:
+            st.subheader("📉 Risk (Drawdown)")
             fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
-            fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
+            fig_dd.update_layout(margin=dict(l=0, r=0, t=0, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=200, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: TIME INTELLIGENCE (DUAL AXIS) ---
         st.divider()
-        st.subheader("⏳ Time Intelligence (Seasonality)")
-        st.caption("Bars = Average Return (Left Axis). Lines = Win Rate % (Right Axis).")
-        
-        c_time1, c_time2 = st.columns(2)
-        
-        # --- CHART 1: DAY OF WEEK ---
-        with c_time1:
-            st.markdown("**📅 Day of Week**")
-            
-            # Create Dual-Axis Chart
-            fig_dow = go.Figure()
-            
-            # Bar: Average Return
-            fig_dow.add_trace(go.Bar(
-                x=day_stats.index,
-                y=day_stats['Avg_Return'],
-                name='Avg Return',
-                marker_color=day_stats['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'),
-                yaxis='y1'
-            ))
-            
-            # Line: Win Rate
-            fig_dow.add_trace(go.Scatter(
-                x=day_stats.index,
-                y=day_stats['Win_Rate'],
-                name='Win Rate %',
-                mode='lines+markers+text',
-                text=day_stats['Win_Rate'].apply(lambda x: f"{x:.0f}%"), # Label points
-                textposition="top center",
-                line=dict(color='#ffb000', width=3),
-                yaxis='y2'
-            ))
 
-            # Layout Updates
-            fig_dow.update_layout(
-                yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
-                yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
-                showlegend=False,
-                height=350,
-                margin=dict(l=0, r=0, t=10, b=0),
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="#cccccc")
-            )
-            st.plotly_chart(fig_dow, use_container_width=True)
-
-        # --- CHART 2: MONTH OF YEAR ---
-        with c_time2:
-            st.markdown("**🗓️ Month of Year**")
-            
-            # Create Dual-Axis Chart
-            fig_moy = go.Figure()
-            
-            # Bar: Average Return
-            fig_moy.add_trace(go.Bar(
-                x=monthly_stats.index,
-                y=monthly_stats['Avg_Return'],
-                name='Avg Return',
-                marker_color=monthly_stats['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'),
-                yaxis='y1'
-            ))
-            
-            # Line: Win Rate
-            fig_moy.add_trace(go.Scatter(
-                x=monthly_stats.index,
-                y=monthly_stats['Win_Rate'],
-                name='Win Rate %',
-                mode='lines+markers+text',
-                text=monthly_stats['Win_Rate'].apply(lambda x: f"{x:.0f}%"),
-                textposition="top center",
-                line=dict(color='#ffb000', width=3),
-                yaxis='y2'
-            ))
-
-            # Layout Updates
-            fig_moy.update_layout(
-                yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
-                yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
-                showlegend=False,
-                height=350,
-                margin=dict(l=0, r=0, t=10, b=0),
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="#cccccc")
-            )
-            st.plotly_chart(fig_moy, use_container_width=True)
-
-        # --- SECTION 4: 3D PHYSICS LAB ---
-        st.divider()
+        # --- ROW 3: 3D PHYSICS LAB ---
         st.subheader("🧊 Angel 3D Trajectory (Phase Space)")
-        st.info("Dimensions: **X**=Time, **Y**=Velocity (Return), **Z**=Acceleration. **Color/Size** = JERK (Market Shock).")
-
         if not phys_df.empty:
             fig_3d = go.Figure(data=[go.Scatter3d(
                 x=phys_df['timestamp'],
@@ -836,46 +874,24 @@ with tab3:
 
             fig_3d.update_layout(
                 scene=dict(
-                    xaxis_title='Time',
-                    yaxis_title='Velocity',
-                    zaxis_title='Accel',
+                    xaxis_title='Time', yaxis_title='Velocity', zaxis_title='Accel',
                     xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
                     yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
                     zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
                 ),
-                paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="#cccccc"),
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=600 
+                paper_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"),
+                margin=dict(l=0, r=0, t=0, b=0), height=500 
             )
             st.plotly_chart(fig_3d, use_container_width=True)
-        else:
-            st.info("Not enough data points for Physics analysis.")
-
-        # --- SECTION 5: FUTURE PROJECTIONS ---
+            
+        # --- ROW 4: PROJECTIONS ---
         st.divider()
         st.markdown(f"### 🔮 Future Projections (CAGR: {current_cagr:.1%})")
-        
         if not proj_df.empty:
-            c_p1, c_p2 = st.columns([2, 1])
-            with c_p1:
-                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
-                fig_proj.update_traces(line_width=3)
-                fig_proj.update_layout(
-                    margin=dict(l=0, r=0, t=30, b=0), 
-                    xaxis_title=None, 
-                    yaxis_title=None, 
-                    height=350, 
-                    legend=dict(orientation="h", y=1.1, x=0)
-                )
-                st.plotly_chart(fig_proj, use_container_width=True)
-            with c_p2:
-                st.dataframe(
-                    proj_df, 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={"Projected Value": st.column_config.NumberColumn(format="$%.2f")}
-                )
+            fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
+            fig_proj.update_layout(margin=dict(l=0, r=0, t=20, b=0), xaxis_title=None, yaxis_title=None, height=300)
+            st.plotly_chart(fig_proj, use_container_width=True)
+
     else:
         st.write("No history data available yet.")
 
