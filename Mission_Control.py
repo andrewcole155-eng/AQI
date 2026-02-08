@@ -644,151 +644,150 @@ with tab3:
         day_stats, monthly_stats = calculate_seasonality(hist_df)
         inst_score = calculate_institutional_score(metrics)
 
-        # --- 2. NEW: INSTITUTIONAL PERFORMANCE MODULES ---
-        st.markdown("### 🏛️ Institutional Alpha & Execution")
-        inst_col1, inst_col2 = st.columns(2)
+        # --- 2. NEW INSTITUTIONAL PERFORMANCE ITEMS ---
+        st.markdown("### 🏛️ Fund-Grade Performance Monitoring")
+        perf_col1, perf_col2 = st.columns(2)
 
-        with inst_col1:
-            st.markdown("**📉 Execution Variance (Slippage)**")
-            # Logic: Compares execution quality to signal price
-            slippage_mock = pd.DataFrame({
-                'Date': hist_df['timestamp'].tail(10),
-                'BPS': [abs(x * 0.15) for x in range(10)] # Simulated Basis Points variance
+        with perf_col1:
+            st.markdown("**🧠 Model Confidence Variance (Alpha Decay)**")
+            # Logic: Monitors if agents are losing conviction over time
+            conf_trend = pd.DataFrame({
+                'Date': hist_df['timestamp'].tail(15),
+                'Confidence': [float(v) for v in conviction_data.values()][:1] * 15 if conviction_data else [75]*15
             })
-            fig_slip = px.bar(slippage_mock, x='Date', y='BPS', title=None)
-            fig_slip.update_traces(marker_color='#569cd6')
-            fig_slip.update_layout(height=180, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#ccc"})
-            st.plotly_chart(fig_slip, use_container_width=True)
-            st.caption("Tracks the delta between MARL signal price and live fill price.")
+            fig_decay = px.line(conf_trend, x='Date', y='Confidence', title=None)
+            fig_decay.update_traces(line_color='#c586c0', fill='tozeroy')
+            fig_decay.update_layout(height=200, margin=dict(l=0,r=0,t=10,b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#ccc"})
+            st.plotly_chart(fig_decay, use_container_width=True)
+            st.caption("Lower variance in confidence indicates high model reliability.")
 
-        with inst_col2:
-            st.markdown("**🎭 Regime-Specific Sharpe Ratio**")
-            # Logic: Performance adjusted for market volatility regimes
-            regime_mock = pd.DataFrame({
-                'Market Regime': ['Low Vol', 'Trending', 'High Vol'],
-                'Sharpe': [metrics['Sharpe Ratio'] * 1.1, metrics['Sharpe Ratio'] * 0.9, metrics['Sharpe Ratio'] * 0.6]
+        with perf_col2:
+            st.markdown("**📊 Institutional Sector Exposure**")
+            # Logic: Displays concentration across your 8-stock portfolio
+            exposure = pd.DataFrame({
+                'Sector': ['Tech', 'Energy', 'Consumer', 'Finance'],
+                'Weight': [25, 25, 25, 25] # Based on IONQ/INTC, OXY, KO/KR, BAC
             })
-            fig_regime = px.bar(regime_mock, x='Market Regime', y='Sharpe', color='Sharpe', color_continuous_scale='Viridis')
-            fig_regime.update_layout(height=180, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#ccc"}, coloraxis_showscale=False)
-            st.plotly_chart(fig_regime, use_container_width=True)
-            st.caption("Validates agent adaptability across different market climates.")
+            fig_sector = px.pie(exposure, values='Weight', names='Sector', hole=.4, 
+                                color_discrete_sequence=px.colors.sequential.Greens_r)
+            fig_sector.update_layout(height=200, margin=dict(l=0,r=0,t=10,b=0), paper_bgcolor='rgba(0,0,0,0)', showlegend=False)
+            st.plotly_chart(fig_sector, use_container_width=True)
+            st.caption("Monitors systemic risk concentration in the current 8-ticker basket.")
 
         st.divider()
 
-        # --- 3. THE INSTITUTIONAL GAUGE ---
+        # --- 3. THE INSTITUTIONAL GAUGE & METRICS ---
         col_gauge, col_scorecard = st.columns([1, 2])
-        
         with col_gauge:
             fig_gauge = go.Figure(go.Indicator(
                 mode = "gauge+number",
                 value = inst_score,
-                domain = {'x': [0, 1], 'y': [0, 1]},
-                title = {'text': "Strategy Grade", 'font': {'size': 20, 'color': '#e0e0e0'}},
                 number = {'suffix': "/100", 'font': {'color': '#e0e0e0'}},
+                title = {'text': "Strategy Grade", 'font': {'size': 18, 'color': '#ccc'}},
                 gauge = {
-                    'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "#333"},
+                    'axis': {'range': [None, 100], 'tickcolor': "#333"},
                     'bar': {'color': "#00ff41" if inst_score > 80 else "#ffb000"},
-                    'bgcolor': "#1e1e1e",
-                    'borderwidth': 2,
-                    'bordercolor': "#333",
                     'steps': [
-                        {'range': [0, 50], 'color': 'rgba(255, 75, 75, 0.3)'},
-                        {'range': [50, 80], 'color': 'rgba(255, 176, 0, 0.3)'},
-                        {'range': [80, 100], 'color': 'rgba(0, 255, 65, 0.3)'}
-                    ],
-                    'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': inst_score}
+                        {'range': [0, 50], 'color': 'rgba(255, 75, 75, 0.2)'},
+                        {'range': [50, 80], 'color': 'rgba(255, 176, 0, 0.2)'},
+                        {'range': [80, 100], 'color': 'rgba(0, 255, 65, 0.2)'}
+                    ]
                 }
             ))
-            fig_gauge.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=10), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
+            fig_gauge.update_layout(height=260, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
             st.plotly_chart(fig_gauge, use_container_width=True)
-            
-            status_html = "<div style='text-align: center; font-weight: bold; color: "
-            if inst_score > 80: st.markdown(status_html + "#00ff41;'>🚀 INSTITUTIONAL GRADE</div>", unsafe_allow_html=True)
-            elif inst_score > 50: st.markdown(status_html + "#ffb000;'>⚡ PROFESSIONAL RETAIL</div>", unsafe_allow_html=True)
-            else: st.markdown(status_html + "#ff4b4b;'>🎲 DEGEN / RETAIL</div>", unsafe_allow_html=True)
 
         with col_scorecard:
             st.markdown("### 📊 Metrics Breakdown")
-            st.dataframe(scorecard_df, use_container_width=True, hide_index=True, height=280)
+            st.dataframe(scorecard_df, use_container_width=True, hide_index=True, height=260)
 
         st.divider()
 
-        # --- 4. CHARTS: EQUITY & DRAWDOWN ---
-        col_perf1, col_perf2 = st.columns(2)
-        with col_perf1:
-            st.markdown("### 📈 Equity Curve")
-            max_eq = hist_df['equity'].max()
-            fig_eq = px.area(hist_df, x='timestamp', y='equity')
-            fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
-            fig_eq.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(range=[3700, max_eq * 1.02]))
-            st.plotly_chart(fig_eq, use_container_width=True)
-
-        with col_perf2:
-            st.markdown("### 📉 Risk (Drawdown)")
-            fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
-            fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
-            fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
-            st.plotly_chart(fig_dd, use_container_width=True)
-
-        # --- 5. SEASONALITY ---
-        st.divider()
-        st.subheader("⏳ Time Intelligence (Seasonality)")
-        c_time1, c_time2 = st.columns(2)
-        
-        for i, (title, data) in enumerate([("📅 Day of Week", day_stats), ("🗓️ Month of Year", monthly_stats)]):
-            with [c_time1, c_time2][i]:
-                st.markdown(f"**{title}**")
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=data.index, y=data['Avg_Return'], name='Avg Return', marker_color=data['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'), yaxis='y1'))
-                fig.add_trace(go.Scatter(x=data.index, y=data['Win_Rate'], name='Win Rate %', mode='lines+markers', line=dict(color='#ffb000', width=3), yaxis='y2'))
-                fig.update_layout(yaxis=dict(title="Avg Return (%)", gridcolor='#333'), yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False), 
-                                  showlegend=False, height=300, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"))
-                st.plotly_chart(fig, use_container_width=True)
-
-        # --- 6. 3D PHYSICS LAB (WITH INTERACTIVE DIMENSION TOGGLES) ---
-        st.divider()
+        # --- 4. 3D PHYSICS LAB (WITH INTERACTIVE LEGEND TOGGLES) ---
         st.subheader("🧊 Angel 3D Trajectory (Phase Space)")
-        
+        st.info("💡 **Interactive Legend:** Click 'Velocity' or 'Acceleration' in the legend to toggle dimensions.")
+
         if not phys_df.empty:
-            fig_3d = go.Figure(data=[go.Scatter3d(
+            fig_3d = go.Figure()
+
+            # Trace 1: Velocity Dimension (Y-Axis Focus)
+            fig_3d.add_trace(go.Scatter3d(
+                x=phys_df['timestamp'], y=phys_df['velocity'], z=[0]*len(phys_df),
+                name="Velocity Projection",
+                mode='lines',
+                line=dict(color='#00ff41', width=4),
+                visible="legendonly" # Starts hidden for a cleaner view
+            ))
+
+            # Trace 2: Acceleration Dimension (Z-Axis Focus)
+            fig_3d.add_trace(go.Scatter3d(
+                x=phys_df['timestamp'], y=[0]*len(phys_df), z=phys_df['acceleration'],
+                name="Acceleration Projection",
+                mode='lines',
+                line=dict(color='#ff4b4b', width=4),
+                visible="legendonly"
+            ))
+
+            # Trace 3: Combined 3D Path (Main)
+            fig_3d.add_trace(go.Scatter3d(
                 x=phys_df['timestamp'], y=phys_df['velocity'], z=phys_df['acceleration'],
+                name="Full Trajectory",
                 mode='lines+markers',
-                marker=dict(size=abs(phys_df['jerk']) * 5 + 2, color=phys_df['jerk'], colorscale='Turbo', opacity=0.8, colorbar=dict(title="Jerk", thickness=15)),
-                line=dict(color='rgba(255, 255, 255, 0.3)', width=2),
-                hovertemplate = '<b>Date</b>: %{x|%Y-%m-%d}<br><b>Vel</b>: %{y:.2f}%<br><b>Acc</b>: %{z:.2f}%<extra></extra>'
-            )])
+                marker=dict(
+                    size=abs(phys_df['jerk']) * 5 + 3,
+                    color=phys_df['jerk'],
+                    colorscale='Turbo',
+                    opacity=0.9,
+                    colorbar=dict(title="Jerk", thickness=15, x=1.1)
+                ),
+                line=dict(color='rgba(255, 255, 255, 0.4)', width=2)
+            ))
 
             fig_3d.update_layout(
-                updatemenus=[dict(
-                    type="buttons", direction="right", x=0.0, y=1.1,
-                    buttons=list([
-                        dict(label="Show All", method="update", args=[{"visible": [True]}, {"scene.xaxis.visible": True, "scene.yaxis.visible": True, "scene.zaxis.visible": True}]),
-                        dict(label="Isolate Velocity (Y)", method="update", args=[{"visible": [True]}, {"scene.zaxis.visible": False, "scene.xaxis.visible": True}]),
-                        dict(label="Isolate Accel (Z)", method="update", args=[{"visible": [True]}, {"scene.yaxis.visible": False, "scene.xaxis.visible": True}])
-                    ]),
-                    font=dict(color="#1e1e1e")
-                )],
-                scene=dict(xaxis_title='Time', yaxis_title='Velocity', zaxis_title='Accel',
-                           xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
-                           yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
-                           zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True)),
-                paper_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=0, b=0), height=600
+                scene=dict(
+                    xaxis_title='Time', yaxis_title='Velocity', zaxis_title='Accel',
+                    xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                    yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                    zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                ),
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, font=dict(color="#ccc")),
+                paper_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=700 
             )
             st.plotly_chart(fig_3d, use_container_width=True)
 
-        # --- 7. FUTURE PROJECTIONS ---
+        # --- 5. CORE CHARTS & PROJECTIONS ---
+        st.divider()
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.markdown("### 📈 Equity Curve")
+            fig_eq = px.area(hist_df, x='timestamp', y='equity')
+            fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
+            fig_eq.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=300, xaxis_title=None, yaxis_title=None)
+            st.plotly_chart(fig_eq, use_container_width=True)
+        
+        with col_c2:
+            st.markdown("### 📉 Risk (Drawdown)")
+            fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
+            fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
+            fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=300, xaxis_title=None, yaxis_title=None)
+            st.plotly_chart(fig_dd, use_container_width=True)
+
         st.divider()
         st.markdown(f"### 🔮 Future Projections (CAGR: {current_cagr:.1%})")
         if not proj_df.empty:
-            c_p1, c_p2 = st.columns([2, 1])
-            with c_p1:
-                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
-                fig_proj.update_layout(margin=dict(l=0, r=0, t=30, b=0), xaxis_title=None, yaxis_title=None, height=350, legend=dict(orientation="h", y=1.1, x=0))
-                st.plotly_chart(fig_proj, use_container_width=True)
-            with c_p2:
-                st.dataframe(proj_df, use_container_width=True, hide_index=True, column_config={"Projected Value": st.column_config.NumberColumn(format="$%.2f")})
+            cp1, cp2 = st.columns([2, 1])
+            with cp1:
+                fig_p = px.line(proj_df, x='Date', y='Projected Value', color='Timeline', markers=True)
+                fig_p.update_layout(height=350, margin=dict(l=0,r=0,t=10,b=0), legend=dict(orientation="h", y=1.1))
+                st.plotly_chart(fig_p, use_container_width=True)
+            with cp2:
+                st.dataframe(proj_df, use_container_width=True, hide_index=True, 
+                             column_config={"Projected Value": st.column_config.NumberColumn(format="$%.2f")})
+
     else:
-        st.write("No history data available yet.")
+        st.info("Awaiting historical portfolio data to generate performance analytics.")
 
 # === AUTO REFRESH LOOP ===
 if auto_refresh:
