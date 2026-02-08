@@ -9,7 +9,6 @@ import gspread
 from datetime import datetime, timedelta
 import pytz
 import plotly.graph_objects as go
-import numpy as np
 
 st.set_page_config(
     page_title="Angel V6 Mission Control",
@@ -222,47 +221,6 @@ def calculate_seasonality(df):
     
     return day_stats, monthly_stats
 
-def calculate_pro_metrics(hist_df):
-    """
-    Calculates Institutional Metrics: SQN, Ulcer Index, Payoff Ratio.
-    """
-    if hist_df.empty: return {}
-    
-    df = hist_df.copy()
-    df['daily_return'] = df['equity'].pct_change()
-    df['diff'] = df['equity'].diff()
-    
-    # --- 1. System Quality Number (SQN) ---
-    # Formula: SquareRoot(N) * (Mean / StdDev)
-    n = len(df)
-    mean_ret = df['daily_return'].mean()
-    std_ret = df['daily_return'].std()
-    
-    sqn = (n ** 0.5) * (mean_ret / std_ret) if std_ret > 0 else 0
-    
-    # --- 2. Ulcer Index (Stress) ---
-    # Measure of depth and duration of drawdowns
-    df['peak'] = df['equity'].cummax()
-    df['dd_pct'] = (df['equity'] - df['peak']) / df['peak']
-    df['sq_dd'] = df['dd_pct'] ** 2
-    ulcer_index = np.sqrt(df['sq_dd'].mean()) * 100 # Scaled to 0-100
-    
-    # --- 3. Payoff Ratio (Avg Win / Avg Loss) ---
-    avg_win = df[df['diff'] > 0]['diff'].mean()
-    avg_loss = abs(df[df['diff'] < 0]['diff'].mean())
-    
-    payoff = (avg_win / avg_loss) if avg_loss > 0 else 0
-    
-    # --- 4. Volatility (Annualized) ---
-    volatility = std_ret * (252 ** 0.5)
-
-    return {
-        "SQN": sqn,
-        "Ulcer Index": ulcer_index,
-        "Payoff Ratio": payoff,
-        "Volatility": volatility
-    }
-
 def calculate_advanced_metrics(hist_df):
     """Calculates strict Portfolio Metrics (No synthetic Trade Projections)."""
     if hist_df.empty: return {}
@@ -333,13 +291,7 @@ def create_scorecard_df(metrics):
         # --- CONSISTENCY ---
         {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
         {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Daily)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Daily)'] > 0.5 else "🔻 Low"},
-    
-        {"METRIC": "SQN Score", "YOURS": f"{pro_metrics['SQN']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": "💎 Holy Grail" if pro_metrics['SQN'] > 3.0 else ("✅ Strong" if pro_metrics['SQN'] > 2.0 else "😐 Avg")},
-        {"METRIC": "Ulcer Index", "YOURS": f"{pro_metrics['Ulcer Index']:.1f}", "BENCHMARK": "< 5.0", "VERDICT": "🧘 Zen" if pro_metrics['Ulcer Index'] < 5.0 else "😰 Stress"},
-        {"METRIC": "Payoff Ratio", "YOURS": f"{pro_metrics['Payoff Ratio']:.2f}", "BENCHMARK": "> 1.2", "VERDICT": "💰 Rich" if pro_metrics['Payoff Ratio'] > 1.2 else "⚠️ Risk"},
-        {"METRIC": "Ann. Volatility", "YOURS": f"{pro_metrics['Volatility']:.1%}", "BENCHMARK": "< 25%", "VERDICT": "🛡️ Low" if pro_metrics['Volatility'] < 0.25 else "⚡ High"},
     ]
-
     return pd.DataFrame(data)
 
 def calculate_institutional_score(metrics):
@@ -437,59 +389,6 @@ def calculate_future_projections(hist_df, current_equity):
         
     return pd.DataFrame(projections), cagr
 
-def calculate_monte_carlo(hist_df, current_equity, n_sims=200, years=10):
-    """
-    Runs a Monte Carlo simulation (Geometric Brownian Motion)
-    Returns: A DataFrame with 3 lines: 95th Percentile (Best), 50th (Median), 5th (Worst)
-    """
-    if hist_df.empty or len(hist_df) < 10: return pd.DataFrame()
-    
-    # 1. Calculate History Stats (Log Returns are safer for long term)
-    prices = hist_df['equity']
-    log_returns = np.log(prices / prices.shift(1)).dropna()
-    
-    mu = log_returns.mean()  # Daily Drift
-    sigma = log_returns.std() # Daily Volatility
-    
-    # 2. Setup Simulation
-    days = 252 * years
-    dt = 1 # Time step (1 day)
-    
-    # Generate random paths: [days, n_sims]
-    # Brownian Motion formula: exp((mu - 0.5*sigma^2)*t + sigma*W_t)
-    drift = (mu - 0.5 * sigma**2)
-    random_shocks = np.random.normal(0, 1, (days, n_sims))
-    
-    # Calculate daily returns for all paths
-    daily_returns = np.exp(drift * dt + sigma * np.sqrt(dt) * random_shocks)
-    
-    # 3. Accumulate Returns starting from Current Equity
-    price_paths = np.zeros_like(daily_returns)
-    price_paths[0] = current_equity
-    
-    for t in range(1, days):
-        price_paths[t] = price_paths[t-1] * daily_returns[t]
-        
-    # 4. Extract Percentiles (The "Cone")
-    # We want to see the spread at every time step
-    percentile_5 = np.percentile(price_paths, 5, axis=1)
-    percentile_50 = np.percentile(price_paths, 50, axis=1)
-    percentile_95 = np.percentile(price_paths, 95, axis=1)
-    
-    # 5. Create Date Index
-    start_date = pd.Timestamp.now().normalize()
-    # Generate business days for the next 10 years
-    future_dates = pd.date_range(start=start_date, periods=days, freq='B')
-    
-    mc_df = pd.DataFrame({
-        'Date': future_dates,
-        'Worst Case (5%)': percentile_5,
-        'Median Case (50%)': percentile_50,
-        'Best Case (95%)': percentile_95
-    })
-    
-    return mc_df
-    
 def calculate_3d_physics(df):
     """
     Calculates Velocity, Acceleration, and Jerk (The 3rd Derivative).
@@ -738,13 +637,7 @@ with tab3:
         
         # --- CALCULATIONS ---
         metrics = calculate_advanced_metrics(hist_df)
-        
-        # NEW: Calculate Pro Metrics (SQN, Ulcer, etc.)
-        pro_metrics = calculate_pro_metrics(hist_df)
-        
-        # UPDATED: Use the extended scorecard function
-        scorecard_df = create_scorecard_df(metrics, pro_metrics)
-        
+        scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
         phys_df = calculate_3d_physics(hist_df)
