@@ -9,6 +9,7 @@ import gspread
 from datetime import datetime, timedelta
 import pytz
 import plotly.graph_objects as go
+import numpy as np
 
 st.set_page_config(
     page_title="Angel V6 Mission Control",
@@ -221,6 +222,47 @@ def calculate_seasonality(df):
     
     return day_stats, monthly_stats
 
+def calculate_pro_metrics(hist_df):
+    """
+    Calculates Institutional Metrics: SQN, Ulcer Index, Payoff Ratio.
+    """
+    if hist_df.empty: return {}
+    
+    df = hist_df.copy()
+    df['daily_return'] = df['equity'].pct_change()
+    df['diff'] = df['equity'].diff()
+    
+    # --- 1. System Quality Number (SQN) ---
+    # Formula: SquareRoot(N) * (Mean / StdDev)
+    n = len(df)
+    mean_ret = df['daily_return'].mean()
+    std_ret = df['daily_return'].std()
+    
+    sqn = (n ** 0.5) * (mean_ret / std_ret) if std_ret > 0 else 0
+    
+    # --- 2. Ulcer Index (Stress) ---
+    # Measure of depth and duration of drawdowns
+    df['peak'] = df['equity'].cummax()
+    df['dd_pct'] = (df['equity'] - df['peak']) / df['peak']
+    df['sq_dd'] = df['dd_pct'] ** 2
+    ulcer_index = np.sqrt(df['sq_dd'].mean()) * 100 # Scaled to 0-100
+    
+    # --- 3. Payoff Ratio (Avg Win / Avg Loss) ---
+    avg_win = df[df['diff'] > 0]['diff'].mean()
+    avg_loss = abs(df[df['diff'] < 0]['diff'].mean())
+    
+    payoff = (avg_win / avg_loss) if avg_loss > 0 else 0
+    
+    # --- 4. Volatility (Annualized) ---
+    volatility = std_ret * (252 ** 0.5)
+
+    return {
+        "SQN": sqn,
+        "Ulcer Index": ulcer_index,
+        "Payoff Ratio": payoff,
+        "Volatility": volatility
+    }
+
 def calculate_advanced_metrics(hist_df):
     """Calculates strict Portfolio Metrics (No synthetic Trade Projections)."""
     if hist_df.empty: return {}
@@ -291,7 +333,13 @@ def create_scorecard_df(metrics):
         # --- CONSISTENCY ---
         {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
         {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Daily)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Daily)'] > 0.5 else "🔻 Low"},
+    
+        {"METRIC": "SQN Score", "YOURS": f"{pro_metrics['SQN']:.2f}", "BENCHMARK": "> 3.0", "VERDICT": "💎 Holy Grail" if pro_metrics['SQN'] > 3.0 else ("✅ Strong" if pro_metrics['SQN'] > 2.0 else "😐 Avg")},
+        {"METRIC": "Ulcer Index", "YOURS": f"{pro_metrics['Ulcer Index']:.1f}", "BENCHMARK": "< 5.0", "VERDICT": "🧘 Zen" if pro_metrics['Ulcer Index'] < 5.0 else "😰 Stress"},
+        {"METRIC": "Payoff Ratio", "YOURS": f"{pro_metrics['Payoff Ratio']:.2f}", "BENCHMARK": "> 1.2", "VERDICT": "💰 Rich" if pro_metrics['Payoff Ratio'] > 1.2 else "⚠️ Risk"},
+        {"METRIC": "Ann. Volatility", "YOURS": f"{pro_metrics['Volatility']:.1%}", "BENCHMARK": "< 25%", "VERDICT": "🛡️ Low" if pro_metrics['Volatility'] < 0.25 else "⚡ High"},
     ]
+
     return pd.DataFrame(data)
 
 def calculate_institutional_score(metrics):
@@ -690,7 +738,13 @@ with tab3:
         
         # --- CALCULATIONS ---
         metrics = calculate_advanced_metrics(hist_df)
-        scorecard_df = create_scorecard_df(metrics)
+        
+        # NEW: Calculate Pro Metrics (SQN, Ulcer, etc.)
+        pro_metrics = calculate_pro_metrics(hist_df)
+        
+        # UPDATED: Use the extended scorecard function
+        scorecard_df = create_scorecard_df(metrics, pro_metrics)
+        
         dd_df = calculate_drawdown(hist_df)
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
         phys_df = calculate_3d_physics(hist_df)
