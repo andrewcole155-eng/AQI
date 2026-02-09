@@ -46,20 +46,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# === SIDEBAR CONFIG ===
-with st.sidebar:
-    st.header("🦅 Angel Control")
-    auto_refresh = st.toggle("Enable Auto-Refresh (60s)", value=True)
-    st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
-    
-    # FIX: Explicitly clear the cache, otherwise st.rerun() just loads old data
-    if st.button("Force Refresh Now", type="primary"):
-        read_bot_logs.clear()
-        get_account_data.clear()
-        get_portfolio_history.clear()
-        st.cache_data.clear() # Nuclear option to be safe
-        st.rerun()
-
 # === CONNECTIONS (CACHED) ===
 
 @st.cache_resource
@@ -447,6 +433,20 @@ def format_log_line(line):
 
     return f'<div class="log-line">{clean_line}</div>'
 
+# === SIDEBAR CONFIG (MOVED HERE TO FIX NAME ERROR) ===
+with st.sidebar:
+    st.header("🦅 Angel Control")
+    auto_refresh = st.toggle("Enable Auto-Refresh (60s)", value=True)
+    st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
+    
+    # FIX: Now this works because the functions are defined above!
+    if st.button("Force Refresh Now", type="primary"):
+        read_bot_logs.clear()
+        get_account_data.clear()
+        get_portfolio_history.clear()
+        st.cache_data.clear() 
+        st.rerun()
+
 # === DASHBOARD LOGIC ===
 api = init_alpaca()
 if not api: st.stop()
@@ -457,7 +457,6 @@ account, positions, orders = get_account_data(api)
 if account:
     col1, col2, col3, col4 = st.columns(4)
     
-    # UPDATE: Access keys as Dictionary ['key'] instead of Object .key
     equity = float(account['equity'])
     last_equity = float(account['last_equity'])
     buying_power = float(account['buying_power'])
@@ -471,13 +470,11 @@ if account:
     
     # Process Logs
     logs = read_bot_logs()
-    # UPDATED: You must unpack the 5th variable here for the chart to work
     last_run_str, last_run_dt, parsed_signals, watchlist_data, conviction_data = parse_latest_run_logic(logs)
 
     # Calculate "Time Since Last Run"
     status_label = "Bot Status"
     status_val = "Unknown"
-    status_color = "off"
     
     if last_run_dt:
         diff = datetime.now() - last_run_dt 
@@ -517,19 +514,17 @@ with tab1:
 
     st.divider()
 
-    # --- 2. NEURAL CONVICTION RADAR (NEW) ---
+    # --- 2. NEURAL CONVICTION RADAR ---
     st.subheader("🧠 Neural Conviction Levels")
     if conviction_data:
-        # Convert dict to DataFrame
         df_conv = pd.DataFrame(list(conviction_data.items()), columns=['Ticker', 'Confidence'])
         
-        # Create Bar Chart
         fig_conf = px.bar(
             df_conv, 
             x='Ticker', 
             y='Confidence', 
             color='Confidence',
-            color_continuous_scale=['#2d2d2d', '#ffb000', '#00ff41'], # Dark -> Amber -> Green
+            color_continuous_scale=['#2d2d2d', '#ffb000', '#00ff41'], 
             range_y=[0, 100],
             text_auto='.1f'
         )
@@ -557,14 +552,16 @@ with tab1:
         st.subheader("🔭 Opportunity Watchlist")
         if watchlist_data:
             wl_df = pd.DataFrame(watchlist_data)
-            st.dataframe(wl_df, use_container_width=True, hide_index=True)
+            # FIX: Updated width parameter
+            st.dataframe(wl_df, width="stretch", hide_index=True)
         else:
             st.caption("No high-confidence setups detected yet.")
 
         st.subheader("📝 Decision Log")
         if parsed_signals:
             sig_df = pd.DataFrame(list(parsed_signals.items()), columns=["Ticker", "Decision"])
-            st.dataframe(sig_df, use_container_width=True, hide_index=True)
+            # FIX: Updated width parameter
+            st.dataframe(sig_df, width="stretch", hide_index=True)
         else:
             st.info("No signals parsed from recent logs.")
 
@@ -585,9 +582,10 @@ with tab1:
                 })
             
             df_pos = pd.DataFrame(pos_data)
+            # FIX: Updated width parameter
             st.dataframe(
                 df_pos,
-                use_container_width=True,
+                width="stretch",
                 column_config={
                     "P/L ($)": st.column_config.NumberColumn("P/L ($)", format="$%.2f"),
                     "P/L (%)": st.column_config.NumberColumn("P/L (%)", format="%.2f%%"),
@@ -598,15 +596,14 @@ with tab1:
         else:
             st.caption("No active positions currently held.")
 
-        # --- NEW: RECENT ORDERS SECTION ---
+        # --- RECENT ORDERS ---
         st.divider()
         st.subheader("📜 Recent Orders")
         if orders:
             order_data = []
-            for o in orders[:5]: # Last 5 orders
-                # Format time nicely
+            for o in orders[:5]: 
                 t = o['created_at']
-                t_fmt = t[5:16].replace('T', ' ') # Simple "MM-DD HH:MM" format
+                t_fmt = t[5:16].replace('T', ' ') 
                 
                 order_data.append({
                     "Time": t_fmt,
@@ -617,7 +614,8 @@ with tab1:
                 })
             
             df_orders = pd.DataFrame(order_data)
-            st.dataframe(df_orders, use_container_width=True, hide_index=True)
+            # FIX: Updated width parameter
+            st.dataframe(df_orders, width="stretch", hide_index=True)
         else:
             st.caption("No recent orders found.")
 
@@ -625,16 +623,9 @@ with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
     
     if logs:
-        # 1. Slice to get only the last 50 lines
         recent_logs = logs[-50:] 
-        
-        # 2. Apply the VS Code formatting to each line
         formatted_logs = [format_log_line(line) for line in recent_logs]
-        
-        # 3. Join them (the CSS .log-line handle the breaks now)
         log_html = "".join(formatted_logs)
-        
-        # 4. Render
         st.markdown(f'<div class="terminal-box">{log_html}</div>', unsafe_allow_html=True)
     else:
         st.write("No logs found.")
@@ -652,10 +643,7 @@ with tab3:
         proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
         phys_df = calculate_3d_physics(hist_df)
         
-        # NEW: Calculate Seasonality
         day_stats, monthly_stats = calculate_seasonality(hist_df)
-        
-        # Calculate Institutional Score
         inst_score = calculate_institutional_score(metrics)
 
         # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
@@ -694,9 +682,10 @@ with tab3:
 
         with col_scorecard:
             st.markdown("### 📊 Metrics Breakdown")
+            # FIX: Updated width parameter
             st.dataframe(
                 scorecard_df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "METRIC": st.column_config.TextColumn("Metric", width="medium"),
@@ -733,7 +722,7 @@ with tab3:
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: TIME INTELLIGENCE (DUAL AXIS) ---
+        # --- SECTION 3: TIME INTELLIGENCE ---
         st.divider()
         st.subheader("⏳ Time Intelligence (Seasonality)")
         st.caption("Bars = Average Return (Left Axis). Lines = Win Rate % (Right Axis).")
@@ -743,11 +732,7 @@ with tab3:
         # --- CHART 1: DAY OF WEEK ---
         with c_time1:
             st.markdown("**📅 Day of Week**")
-            
-            # Create Dual-Axis Chart
             fig_dow = go.Figure()
-            
-            # Bar: Average Return
             fig_dow.add_trace(go.Bar(
                 x=day_stats.index,
                 y=day_stats['Avg_Return'],
@@ -755,20 +740,16 @@ with tab3:
                 marker_color=day_stats['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'),
                 yaxis='y1'
             ))
-            
-            # Line: Win Rate
             fig_dow.add_trace(go.Scatter(
                 x=day_stats.index,
                 y=day_stats['Win_Rate'],
                 name='Win Rate %',
                 mode='lines+markers+text',
-                text=day_stats['Win_Rate'].apply(lambda x: f"{x:.0f}%"), # Label points
+                text=day_stats['Win_Rate'].apply(lambda x: f"{x:.0f}%"),
                 textposition="top center",
                 line=dict(color='#ffb000', width=3),
                 yaxis='y2'
             ))
-
-            # Layout Updates
             fig_dow.update_layout(
                 yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
                 yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
@@ -784,11 +765,7 @@ with tab3:
         # --- CHART 2: MONTH OF YEAR ---
         with c_time2:
             st.markdown("**🗓️ Month of Year**")
-            
-            # Create Dual-Axis Chart
             fig_moy = go.Figure()
-            
-            # Bar: Average Return
             fig_moy.add_trace(go.Bar(
                 x=monthly_stats.index,
                 y=monthly_stats['Avg_Return'],
@@ -796,8 +773,6 @@ with tab3:
                 marker_color=monthly_stats['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'),
                 yaxis='y1'
             ))
-            
-            # Line: Win Rate
             fig_moy.add_trace(go.Scatter(
                 x=monthly_stats.index,
                 y=monthly_stats['Win_Rate'],
@@ -808,8 +783,6 @@ with tab3:
                 line=dict(color='#ffb000', width=3),
                 yaxis='y2'
             ))
-
-            # Layout Updates
             fig_moy.update_layout(
                 yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
                 yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
@@ -880,9 +853,10 @@ with tab3:
                 )
                 st.plotly_chart(fig_proj, use_container_width=True)
             with c_p2:
+                # FIX: Updated width parameter
                 st.dataframe(
                     proj_df, 
-                    use_container_width=True, 
+                    width="stretch", 
                     hide_index=True,
                     column_config={"Projected Value": st.column_config.NumberColumn(format="$%.2f")}
                 )
