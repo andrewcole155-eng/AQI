@@ -51,7 +51,13 @@ with st.sidebar:
     st.header("🦅 Angel Control")
     auto_refresh = st.toggle("Enable Auto-Refresh (60s)", value=True)
     st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
+    
+    # FIX: Explicitly clear the cache, otherwise st.rerun() just loads old data
     if st.button("Force Refresh Now", type="primary"):
+        read_bot_logs.clear()
+        get_account_data.clear()
+        get_portfolio_history.clear()
+        st.cache_data.clear() # Nuclear option to be safe
         st.rerun()
 
 # === CONNECTIONS (CACHED) ===
@@ -78,8 +84,12 @@ def read_bot_logs():
         gc = gspread.service_account_from_dict(credentials)
         sh = gc.open("Angel_Bot_Logs")
         worksheet = sh.worksheet("logs")
-        logs = worksheet.col_values(1) # Get all values from Column A
-        return logs
+        
+        # Get all values, but filter out empty strings immediately
+        logs = worksheet.col_values(1)
+        clean_logs = [line for line in logs if line.strip()] 
+        
+        return clean_logs
     except Exception as e:
         return [f"Google Sheets Error: {e}"]
 
