@@ -90,7 +90,7 @@ def get_account_data(_api):
     except:
         return None, [], []
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_portfolio_history(_api):
     try:
         # Fetch ALL history first
