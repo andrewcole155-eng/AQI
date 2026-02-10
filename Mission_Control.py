@@ -196,22 +196,31 @@ def calculate_seasonality(df):
     Returns Avg Return and Win Rate for both.
     """
     s_df = df.copy()
+    
+    # === FIX: Normalize to US Market Time (US/Eastern) ===
+    # This fixes the "Blank Monday" (AU Tuesday) and "Missing Saturday" (AU Friday)
+    if s_df['timestamp'].dt.tz is None:
+        # If timestamps are naive (no timezone), assume UTC first then convert
+        s_df['timestamp'] = s_df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
+    else:
+        s_df['timestamp'] = s_df['timestamp'].dt.tz_convert('US/Eastern')
+    # =====================================================
+
     s_df['daily_return'] = s_df['equity'].pct_change() * 100
     s_df['Day'] = s_df['timestamp'].dt.day_name()
     s_df['Month'] = s_df['timestamp'].dt.month_name()
     s_df['Month_Num'] = s_df['timestamp'].dt.month
     
-    # 1. Day of Week Stats
+    # 1. Day of Week Stats (Standard Mon-Fri Market Week)
     day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
     day_stats = s_df.groupby('Day')['daily_return'].agg(
         Avg_Return='mean',
         Win_Rate=lambda x: (x > 0).sum() / len(x) * 100 if len(x) > 0 else 0
     ).reindex(day_order)
     
-    # 2. Monthly Stats (Group by Month Name to see seasonality across years)
-    # We calculate the stats based on DAILY returns within that month
+    # 2. Monthly Stats
     monthly_stats = s_df.groupby(['Month_Num', 'Month'])['daily_return'].agg(
-        Avg_Return='mean', # Average Daily Return in this month
+        Avg_Return='mean',
         Win_Rate=lambda x: (x > 0).sum() / len(x) * 100 if len(x) > 0 else 0
     ).reset_index().sort_values('Month_Num').set_index('Month')
     
@@ -631,12 +640,33 @@ with tab2:
         st.write("No logs found.")
 
 with tab3:
+    # 1. Get History (which might be 1 day old)
     hist_df = get_portfolio_history(api)
     
     if not hist_df.empty and account:
         current_equity = float(account['equity'])
+
+        # === THE FIX: APPEND LIVE DATA ===
+        # Alpaca history lags. We manually append the current live equity 
+        # so the chart updates to "Right Now" instead of "Last Close".
         
-        # --- CALCULATIONS ---
+        # Ensure timezone awareness matches
+        now_ts = pd.Timestamp.now(tz='UTC') 
+        if hist_df['timestamp'].dt.tz is None:
+            # If history has no timezone, strip ours to match
+            now_ts = pd.Timestamp.now()
+
+        # Create the new row
+        live_row = pd.DataFrame([{
+            'timestamp': now_ts, 
+            'equity': current_equity
+        }])
+        
+        # Glue it to the history
+        hist_df = pd.concat([hist_df, live_row], ignore_index=True)
+        # =================================
+        
+        # --- CALCULATIONS (Using the patched dataframe) ---
         metrics = calculate_advanced_metrics(hist_df)
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
@@ -682,7 +712,6 @@ with tab3:
 
         with col_scorecard:
             st.markdown("### 📊 Metrics Breakdown")
-            # FIX: Updated width parameter
             st.dataframe(
                 scorecard_df,
                 width="stretch",
