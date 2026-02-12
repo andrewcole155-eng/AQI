@@ -105,23 +105,9 @@ def get_portfolio_history(_api):
         
         # Sort to ensure calculations are correct
         df = df.sort_values('timestamp')
-
-        # === CAPITAL ADJUSTMENT (Fix False CAGR) ===
-        # Subtract manual deposits from equity to normalize the performance curve.
-        # Logic: If date > deposit_date, subtract amount from equity.
-        
-        # 1. Deposit: 68.10 on 24 Jan 2026
-        mask_1 = df['timestamp'] >= pd.Timestamp("2026-01-24")
-        df.loc[mask_1, 'equity'] = df.loc[mask_1, 'equity'] - 68.10
-
-        # 2. Deposit: 69.81 on 12 Feb 2026
-        mask_2 = df['timestamp'] >= pd.Timestamp("2026-02-12")
-        df.loc[mask_2, 'equity'] = df.loc[mask_2, 'equity'] - 69.81
-        # ===========================================
         
         return df
     except Exception as e:
-        # st.error(f"History Error: {e}") 
         return pd.DataFrame()
 
 def parse_latest_run_logic(logs):
@@ -653,46 +639,54 @@ with tab2:
         st.write("No logs found.")
 
 with tab3:
-    # 1. Get History (Already adjusted for deposits in the function above)
-    hist_df = get_portfolio_history(api)
+    # 1. Get History (Now Raw)
+    hist_df_raw = get_portfolio_history(api)
     
-    if not hist_df.empty and account:
-        # === HYBRID DATA MODEL ===
-        # raw_equity: The actual money in your wallet ($4,380)
-        # adjusted_equity: The "performance-only" equity ($4,241) used for CAGR
-        
-        raw_equity = float(account['equity'])
-        
-        # Calculate the adjustment offset (Total Deposits)
-        total_deposits = 68.10 + 69.81 # 137.91
-        adjusted_live_equity = raw_equity - total_deposits
+    if not hist_df_raw.empty and account:
+        current_equity_raw = float(account['equity'])
 
         # Ensure timezone awareness matches
         now_ts = pd.Timestamp.now(tz='UTC') 
-        if hist_df['timestamp'].dt.tz is None:
+        if hist_df_raw['timestamp'].dt.tz is None:
             now_ts = pd.Timestamp.now()
 
-        # A. Create ADJUSTED History (For Charts/Metrics) - Ends at $4,241
-        # We use this so the charts don't show "Fake Spikes" and the CAGR is honest.
-        live_row_adj = pd.DataFrame([{
+        # Append LIVE Raw Data
+        live_row = pd.DataFrame([{
             'timestamp': now_ts, 
-            'equity': adjusted_live_equity
+            'equity': current_equity_raw
         }])
-        hist_df_adj = pd.concat([hist_df, live_row_adj], ignore_index=True)
+        hist_df_raw = pd.concat([hist_df_raw, live_row], ignore_index=True)
+
+        # === DATA FORK: Create "Adjusted" Copy for Metrics Only ===
+        # We create a separate dataframe that subtracts the deposits.
+        # This allows us to calculate HONEST CAGR while showing REAL charts.
+        hist_df_adj = hist_df_raw.copy()
         
-        # --- CALCULATIONS (Using Adjusted/Organic Data) ---
+        # Apply Adjustments to the "Metric" dataframe only
+        mask_1 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-01-24", tz=hist_df_adj['timestamp'].dt.tz)
+        hist_df_adj.loc[mask_1, 'equity'] = hist_df_adj.loc[mask_1, 'equity'] - 68.10
+
+        mask_2 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-12", tz=hist_df_adj['timestamp'].dt.tz)
+        hist_df_adj.loc[mask_2, 'equity'] = hist_df_adj.loc[mask_2, 'equity'] - 69.81
+        # ==========================================================
+        
+        # --- CALCULATIONS ---
+        
+        # A. METRICS: Use ADJUSTED Data (Honest Strategy Score)
         metrics = calculate_advanced_metrics(hist_df_adj)
         scorecard_df = create_scorecard_df(metrics)
-        dd_df = calculate_drawdown(hist_df_adj)
-        phys_df = calculate_3d_physics(hist_df_adj)
-        
-        day_stats, monthly_stats = calculate_seasonality(hist_df_adj)
         inst_score = calculate_institutional_score(metrics)
-
-        # --- KEY FIX: PROJECTIONS USE REAL MONEY ---
-        # We calculate the CAGR using the Adjusted curve (Skill), 
-        # but we apply it to the Raw Equity (Wallet).
-        proj_df, current_cagr = calculate_future_projections(hist_df_adj, raw_equity)
+        
+        # B. VISUALS: Use RAW Data (Matches Wallet Balance)
+        dd_df = calculate_drawdown(hist_df_raw)     # Drawdown on actual account value
+        phys_df = calculate_3d_physics(hist_df_raw) # 3D Physics on actual movement
+        day_stats, monthly_stats = calculate_seasonality(hist_df_raw)
+        
+        # C. PROJECTIONS: Hybrid (Adjusted CAGR applied to Raw Equity)
+        # We calculate the growth rate from the Adjusted DF, but apply it to your Real Money.
+        _, valid_cagr = calculate_future_projections(hist_df_adj, current_equity_raw)
+        # Re-run projection function to get the dataframe relative to Raw Equity
+        proj_df, _ = calculate_future_projections(hist_df_adj, current_equity_raw)
 
         # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
         col_gauge, col_scorecard = st.columns([1, 2])
@@ -729,7 +723,7 @@ with tab3:
                 st.markdown("<div style='text-align: center; color: #ff4b4b; font-weight: bold;'>🎲 DEGEN / RETAIL</div>", unsafe_allow_html=True)
 
         with col_scorecard:
-            st.markdown("### 📊 Metrics Breakdown")
+            st.markdown("### 📊 Metrics Breakdown (Adj. for Deposits)")
             st.dataframe(
                 scorecard_df,
                 width="stretch",
@@ -745,15 +739,14 @@ with tab3:
 
         st.divider()
 
-        # --- SECTION 2: CHARTS ---
+        # --- SECTION 2: CHARTS (USING RAW DATA) ---
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
-            st.markdown(f"### 📈 Organic Growth Curve")
-            st.caption(f"Visualizes pure performance (ending ${adjusted_live_equity:,.0f}). Actual Wallet: **${raw_equity:,.2f}**")
+            st.markdown(f"### 📈 Real Equity Curve (${current_equity_raw:,.2f})")
             
-            # Using Adjusted DF for the chart to avoid the 'Deposit Spike'
-            max_equity = hist_df_adj['equity'].max()
-            fig_eq = px.area(hist_df_adj, x='timestamp', y='equity')
+            # Using RAW DF for the chart
+            max_equity = hist_df_raw['equity'].max()
+            fig_eq = px.area(hist_df_raw, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
             fig_eq.update_layout(
                 margin=dict(l=0, r=0, t=10, b=0),
@@ -761,12 +754,13 @@ with tab3:
                 yaxis_title=None,
                 showlegend=False,
                 height=300,
-                yaxis=dict(range=[hist_df_adj['equity'].min() * 0.95, max_equity * 1.02], rangemode="normal")
+                yaxis=dict(range=[hist_df_raw['equity'].min() * 0.95, max_equity * 1.02], rangemode="normal")
             )
             st.plotly_chart(fig_eq, use_container_width=True)
 
         with col_perf2:
-            st.markdown("### 📉 Risk (Drawdown)")
+            st.markdown("### 📉 Real Risk (Drawdown)")
+            # Using RAW DF (Drawdowns will look smaller relative to new higher peaks)
             fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
@@ -779,7 +773,6 @@ with tab3:
         
         c_time1, c_time2 = st.columns(2)
         
-        # --- CHART 1: DAY OF WEEK ---
         with c_time1:
             st.markdown("**📅 Day of Week**")
             fig_dow = go.Figure()
@@ -812,7 +805,6 @@ with tab3:
             )
             st.plotly_chart(fig_dow, use_container_width=True)
 
-        # --- CHART 2: MONTH OF YEAR ---
         with c_time2:
             st.markdown("**🗓️ Month of Year**")
             fig_moy = go.Figure()
@@ -887,7 +879,7 @@ with tab3:
 
         # --- SECTION 5: FUTURE PROJECTIONS ---
         st.divider()
-        st.markdown(f"### 🔮 Future Projections (CAGR: {current_cagr:.1%})")
+        st.markdown(f"### 🔮 Future Projections (Based on Adj. CAGR: {valid_cagr:.1%})")
         
         if not proj_df.empty:
             c_p1, c_p2 = st.columns([2, 1])
