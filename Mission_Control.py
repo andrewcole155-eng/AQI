@@ -657,41 +657,42 @@ with tab3:
     hist_df = get_portfolio_history(api)
     
     if not hist_df.empty and account:
+        # === HYBRID DATA MODEL ===
+        # raw_equity: The actual money in your wallet ($4,380)
+        # adjusted_equity: The "performance-only" equity ($4,241) used for CAGR
+        
         raw_equity = float(account['equity'])
-
-        # === THE FIX: ADJUST LIVE DATA FOR DEPOSITS ===
-        # We must subtract the TOTAL deposits from the live figure too,
-        # otherwise the chart will spike up at the very end.
-        total_deposits = 68.10 + 69.81 # Total: 137.91
+        
+        # Calculate the adjustment offset (Total Deposits)
+        total_deposits = 68.10 + 69.81 # 137.91
         adjusted_live_equity = raw_equity - total_deposits
-        # ==============================================
 
         # Ensure timezone awareness matches
         now_ts = pd.Timestamp.now(tz='UTC') 
         if hist_df['timestamp'].dt.tz is None:
-            # If history has no timezone, strip ours to match
             now_ts = pd.Timestamp.now()
 
-        # Create the new row using ADJUSTED equity
-        live_row = pd.DataFrame([{
+        # A. Create ADJUSTED History (For Charts/Metrics) - Ends at $4,241
+        # We use this so the charts don't show "Fake Spikes" and the CAGR is honest.
+        live_row_adj = pd.DataFrame([{
             'timestamp': now_ts, 
             'equity': adjusted_live_equity
         }])
+        hist_df_adj = pd.concat([hist_df, live_row_adj], ignore_index=True)
         
-        # Glue it to the history
-        hist_df = pd.concat([hist_df, live_row], ignore_index=True)
-        
-        # --- CALCULATIONS (Using the patched dataframe) ---
-        metrics = calculate_advanced_metrics(hist_df)
+        # --- CALCULATIONS (Using Adjusted/Organic Data) ---
+        metrics = calculate_advanced_metrics(hist_df_adj)
         scorecard_df = create_scorecard_df(metrics)
-        dd_df = calculate_drawdown(hist_df)
+        dd_df = calculate_drawdown(hist_df_adj)
+        phys_df = calculate_3d_physics(hist_df_adj)
         
-        # Pass adjusted_live_equity here for accurate projections
-        proj_df, current_cagr = calculate_future_projections(hist_df, adjusted_live_equity)
-        phys_df = calculate_3d_physics(hist_df)
-        
-        day_stats, monthly_stats = calculate_seasonality(hist_df)
+        day_stats, monthly_stats = calculate_seasonality(hist_df_adj)
         inst_score = calculate_institutional_score(metrics)
+
+        # --- KEY FIX: PROJECTIONS USE REAL MONEY ---
+        # We calculate the CAGR using the Adjusted curve (Skill), 
+        # but we apply it to the Raw Equity (Wallet).
+        proj_df, current_cagr = calculate_future_projections(hist_df_adj, raw_equity)
 
         # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
         col_gauge, col_scorecard = st.columns([1, 2])
@@ -747,9 +748,12 @@ with tab3:
         # --- SECTION 2: CHARTS ---
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
-            st.markdown("### 📈 Equity Curve (Adj. for Deposits)")
-            max_equity = hist_df['equity'].max()
-            fig_eq = px.area(hist_df, x='timestamp', y='equity')
+            st.markdown(f"### 📈 Organic Growth Curve")
+            st.caption(f"Visualizes pure performance (ending ${adjusted_live_equity:,.0f}). Actual Wallet: **${raw_equity:,.2f}**")
+            
+            # Using Adjusted DF for the chart to avoid the 'Deposit Spike'
+            max_equity = hist_df_adj['equity'].max()
+            fig_eq = px.area(hist_df_adj, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
             fig_eq.update_layout(
                 margin=dict(l=0, r=0, t=10, b=0),
@@ -757,8 +761,7 @@ with tab3:
                 yaxis_title=None,
                 showlegend=False,
                 height=300,
-                # Dynamic range based on adjusted equity
-                yaxis=dict(range=[hist_df['equity'].min() * 0.95, max_equity * 1.02], rangemode="normal")
+                yaxis=dict(range=[hist_df_adj['equity'].min() * 0.95, max_equity * 1.02], rangemode="normal")
             )
             st.plotly_chart(fig_eq, use_container_width=True)
 
