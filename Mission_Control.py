@@ -105,6 +105,19 @@ def get_portfolio_history(_api):
         
         # Sort to ensure calculations are correct
         df = df.sort_values('timestamp')
+
+        # === CAPITAL ADJUSTMENT (Fix False CAGR) ===
+        # Subtract manual deposits from equity to normalize the performance curve.
+        # Logic: If date > deposit_date, subtract amount from equity.
+        
+        # 1. Deposit: 68.10 on 24 Jan 2026
+        mask_1 = df['timestamp'] >= pd.Timestamp("2026-01-24")
+        df.loc[mask_1, 'equity'] = df.loc[mask_1, 'equity'] - 68.10
+
+        # 2. Deposit: 69.81 on 12 Feb 2026
+        mask_2 = df['timestamp'] >= pd.Timestamp("2026-02-12")
+        df.loc[mask_2, 'equity'] = df.loc[mask_2, 'equity'] - 69.81
+        # ===========================================
         
         return df
     except Exception as e:
@@ -640,37 +653,41 @@ with tab2:
         st.write("No logs found.")
 
 with tab3:
-    # 1. Get History (which might be 1 day old)
+    # 1. Get History (Already adjusted for deposits in the function above)
     hist_df = get_portfolio_history(api)
     
     if not hist_df.empty and account:
-        current_equity = float(account['equity'])
+        raw_equity = float(account['equity'])
 
-        # === THE FIX: APPEND LIVE DATA ===
-        # Alpaca history lags. We manually append the current live equity 
-        # so the chart updates to "Right Now" instead of "Last Close".
-        
+        # === THE FIX: ADJUST LIVE DATA FOR DEPOSITS ===
+        # We must subtract the TOTAL deposits from the live figure too,
+        # otherwise the chart will spike up at the very end.
+        total_deposits = 68.10 + 69.81 # Total: 137.91
+        adjusted_live_equity = raw_equity - total_deposits
+        # ==============================================
+
         # Ensure timezone awareness matches
         now_ts = pd.Timestamp.now(tz='UTC') 
         if hist_df['timestamp'].dt.tz is None:
             # If history has no timezone, strip ours to match
             now_ts = pd.Timestamp.now()
 
-        # Create the new row
+        # Create the new row using ADJUSTED equity
         live_row = pd.DataFrame([{
             'timestamp': now_ts, 
-            'equity': current_equity
+            'equity': adjusted_live_equity
         }])
         
         # Glue it to the history
         hist_df = pd.concat([hist_df, live_row], ignore_index=True)
-        # =================================
         
         # --- CALCULATIONS (Using the patched dataframe) ---
         metrics = calculate_advanced_metrics(hist_df)
         scorecard_df = create_scorecard_df(metrics)
         dd_df = calculate_drawdown(hist_df)
-        proj_df, current_cagr = calculate_future_projections(hist_df, current_equity)
+        
+        # Pass adjusted_live_equity here for accurate projections
+        proj_df, current_cagr = calculate_future_projections(hist_df, adjusted_live_equity)
         phys_df = calculate_3d_physics(hist_df)
         
         day_stats, monthly_stats = calculate_seasonality(hist_df)
@@ -730,7 +747,7 @@ with tab3:
         # --- SECTION 2: CHARTS ---
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
-            st.markdown("### 📈 Equity Curve")
+            st.markdown("### 📈 Equity Curve (Adj. for Deposits)")
             max_equity = hist_df['equity'].max()
             fig_eq = px.area(hist_df, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
@@ -740,7 +757,8 @@ with tab3:
                 yaxis_title=None,
                 showlegend=False,
                 height=300,
-                yaxis=dict(range=[3700, max_equity * 1.02], rangemode="normal")
+                # Dynamic range based on adjusted equity
+                yaxis=dict(range=[hist_df['equity'].min() * 0.95, max_equity * 1.02], rangemode="normal")
             )
             st.plotly_chart(fig_eq, use_container_width=True)
 
@@ -882,7 +900,6 @@ with tab3:
                 )
                 st.plotly_chart(fig_proj, use_container_width=True)
             with c_p2:
-                # FIX: Updated width parameter
                 st.dataframe(
                     proj_df, 
                     width="stretch", 
