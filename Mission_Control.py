@@ -656,17 +656,19 @@ with tab3:
         scorecard_df = create_scorecard_df(metrics)
         inst_score = calculate_institutional_score(metrics)
         
-        # Capture the honest CAGR for the rest of the dashboard
+        # Capture the honest CAGR
         valid_cagr = metrics.get("CAGR", 0.0)
         
-        # B. VISUALS: Use RAW Data (Matches Wallet Balance)
+        # B. VISUALS: Use RAW Data
         dd_df = calculate_drawdown(hist_df_raw) 
         phys_df = calculate_3d_physics(hist_df_raw) 
         day_stats, monthly_stats = calculate_seasonality(hist_df_raw)
         
-        # C. PROJECTIONS: Use valid_cagr applied to Real Money
-        # We pass the CAGR derived from Adjusted data to the projection function
-        proj_df = calculate_future_projections(current_equity_raw, valid_cagr
+        # C. PROJECTIONS: Use valid_cagr (or manual) applied to Real Money
+        projection_rate = manual_cagr if use_manual_cagr else valid_cagr
+        
+        # FIXED LINE BELOW: Added the closing parenthesis
+        proj_df = calculate_future_projections(current_equity_raw, projection_rate)
 
         # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
         col_gauge, col_scorecard = st.columns([1, 2])
