@@ -332,30 +332,11 @@ def calculate_institutional_score(metrics):
     
     return min(100, score)
 
-def calculate_future_projections(hist_df, current_equity):
+def calculate_future_projections(current_equity, target_cagr):
     """
-    Projects equity based on current CAGR (anchored to May 24, 2025).
+    Projects equity based on a provided CAGR rate.
     """
-    if hist_df.empty: return pd.DataFrame(), 0.0
-    
-    # 1. Calculate Current CAGR (The Engine)
-    df = hist_df.copy()
-    
-    # UPDATE: Strict Start Date
-    start_date = pd.Timestamp("2025-05-24")
-    current_date = df['timestamp'].max()
-    
-    days_trading = (current_date - start_date).days
-    if days_trading < 1: days_trading = 1
-    
-    # Total return based on filtered start equity vs current live equity
-    start_equity = df['equity'].iloc[0]
-    total_return = (current_equity - start_equity) / start_equity
-    
-    # Annualized Rate
-    cagr = ((1 + total_return) ** (365 / days_trading)) - 1
-    
-    # 2. Generate Target Dates
+    # 1. Generate Target Dates
     today = pd.Timestamp.now().normalize()
     target_dates = []
     
@@ -373,17 +354,14 @@ def calculate_future_projections(hist_df, current_equity):
         future_dt = pd.Timestamp(year=future_year, month=current_month_index, day=1) + pd.tseries.offsets.MonthEnd(0)
         target_dates.append(future_dt)
 
-    # Deduplicate and Sort
     target_dates = sorted(list(set(target_dates)))
     
-    # 3. Calculate Projections
+    # 2. Calculate Projections
     projections = []
     for date in target_dates:
-        # Calculate years from NOW (using 365.25 for leap year precision)
         years_future = (date - today).days / 365.25
-        
         # Future Value Formula: PV * (1+r)^t
-        future_val = current_equity * ((1 + cagr) ** years_future)
+        future_val = current_equity * ((1 + target_cagr) ** years_future)
         
         projections.append({
             "Date": date,
@@ -391,7 +369,7 @@ def calculate_future_projections(hist_df, current_equity):
             "Projected Value": future_val
         })
         
-    return pd.DataFrame(projections), cagr
+    return pd.DataFrame(projections)
 
 def calculate_3d_physics(df):
     """
@@ -441,17 +419,18 @@ def format_log_line(line):
 
     return f'<div class="log-line">{clean_line}</div>'
 
-# === SIDEBAR CONFIG (MOVED HERE TO FIX NAME ERROR) ===
+# === SIDEBAR CONFIG ===
 with st.sidebar:
     st.header("🦅 Angel Control")
     auto_refresh = st.toggle("Enable Auto-Refresh (60s)", value=True)
-    st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
     
-    # FIX: Now this works because the functions are defined above!
+    st.divider()
+    st.subheader("🔮 Projection Tuning")
+    # Allows you to override the CAGR for projections
+    use_manual_cagr = st.checkbox("Manual CAGR Override")
+    manual_cagr = st.slider("Target CAGR %", 0, 100, 25) / 100
+    
     if st.button("Force Refresh Now", type="primary"):
-        read_bot_logs.clear()
-        get_account_data.clear()
-        get_portfolio_history.clear()
         st.cache_data.clear() 
         st.rerun()
 
@@ -677,16 +656,17 @@ with tab3:
         scorecard_df = create_scorecard_df(metrics)
         inst_score = calculate_institutional_score(metrics)
         
+        # Capture the honest CAGR for the rest of the dashboard
+        valid_cagr = metrics.get("CAGR", 0.0)
+        
         # B. VISUALS: Use RAW Data (Matches Wallet Balance)
-        dd_df = calculate_drawdown(hist_df_raw)     # Drawdown on actual account value
-        phys_df = calculate_3d_physics(hist_df_raw) # 3D Physics on actual movement
+        dd_df = calculate_drawdown(hist_df_raw) 
+        phys_df = calculate_3d_physics(hist_df_raw) 
         day_stats, monthly_stats = calculate_seasonality(hist_df_raw)
         
-        # C. PROJECTIONS: Hybrid (Adjusted CAGR applied to Raw Equity)
-        # We calculate the growth rate from the Adjusted DF, but apply it to your Real Money.
-        _, valid_cagr = calculate_future_projections(hist_df_adj, current_equity_raw)
-        # Re-run projection function to get the dataframe relative to Raw Equity
-        proj_df, _ = calculate_future_projections(hist_df_adj, current_equity_raw)
+        # C. PROJECTIONS: Use valid_cagr applied to Real Money
+        # We pass the CAGR derived from Adjusted data to the projection function
+        proj_df = calculate_future_projections(current_equity_raw, valid_cagr
 
         # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
         col_gauge, col_scorecard = st.columns([1, 2])
@@ -879,27 +859,47 @@ with tab3:
 
         # --- SECTION 5: FUTURE PROJECTIONS ---
         st.divider()
-        st.markdown(f"### 🔮 Future Projections (Based on Adj. CAGR: {valid_cagr:.1%})")
+        
+        # Determine which CAGR to use for the projection
+        projection_rate = manual_cagr if use_manual_cagr else valid_cagr
+        proj_label = "Manual" if use_manual_cagr else "Adj."
+        
+        # Calculate projection
+        proj_df = calculate_future_projections(current_equity_raw, projection_rate)
+        
+        st.markdown(f"### 🔮 Future Projections (Based on {proj_label} CAGR: {projection_rate:.1%})")
         
         if not proj_df.empty:
             c_p1, c_p2 = st.columns([2, 1])
             with c_p1:
-                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline')
+                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline',
+                                   color_discrete_map={"Next 12 Months": "#569cd6", "10-Year Vision": "#c586c0"})
                 fig_proj.update_traces(line_width=3)
                 fig_proj.update_layout(
                     margin=dict(l=0, r=0, t=30, b=0), 
                     xaxis_title=None, 
                     yaxis_title=None, 
-                    height=350, 
-                    legend=dict(orientation="h", y=1.1, x=0)
+                    height=400, 
+                    template="plotly_dark",
+                    legend=dict(orientation="h", y=1.1, x=0),
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)'
                 )
                 st.plotly_chart(fig_proj, use_container_width=True)
             with c_p2:
+                # Highlight the end goal
+                final_val = proj_df['Projected Value'].iloc[-1]
+                st.metric("10-Year Target", f"${final_val:,.2f}", f"{projection_rate:.1%} Rate")
+                
                 st.dataframe(
                     proj_df, 
                     width="stretch", 
                     hide_index=True,
-                    column_config={"Projected Value": st.column_config.NumberColumn(format="$%.2f")}
+                    column_config={
+                        "Date": st.column_config.DatetimeColumn(format="MMM YYYY"),
+                        "Projected Value": st.column_config.NumberColumn(format="$%.2f")
+                    },
+                    height=300
                 )
     else:
         st.write("No history data available yet.")
