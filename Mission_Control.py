@@ -642,15 +642,15 @@ with tab3:
         hist_df_adj = hist_df_raw.copy()
         
         # Deposit 1: Jan 24, 2026 ($68.10)
-        mask_1 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-01-24", tz=df_tz)
+        mask_1 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-01-24", tz=hist_df_adj['timestamp'].dt.tz)
         hist_df_adj.loc[mask_1, 'equity'] = hist_df_adj.loc[mask_1, 'equity'] - 68.10
 
         # Deposit 2: Feb 12, 2026 ($69.81)
-        mask_2 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-12", tz=df_tz)
+        mask_2 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-12", tz=hist_df_adj['timestamp'].dt.tz)
         hist_df_adj.loc[mask_2, 'equity'] = hist_df_adj.loc[mask_2, 'equity'] - 69.81
 
-        # Deposit 3: Feb 16, 2026 ($139.75) <-- NEW
-        mask_3 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-16", tz=df_tz)
+        # Deposit 3: Feb 16, 2026 ($139.75)
+        mask_3 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-16", tz=hist_df_adj['timestamp'].dt.tz)
         hist_df_adj.loc[mask_3, 'equity'] = hist_df_adj.loc[mask_3, 'equity'] - 139.75
         # ==========================================================
         
