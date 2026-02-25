@@ -655,7 +655,7 @@ with tab3:
 
         # Deposit 4: Feb 26, 2026 ($69.71)
         mask_4 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-26", tz=hist_df_adj['timestamp'].dt.tz)
-        hist_df_adj.loc[mask_4, 'equity'] = hist_df_adj.loc[mask_3, 'equity'] - 69.71
+        hist_df_adj.loc[mask_4, 'equity'] = hist_df_adj.loc[mask_4, 'equity'] - 69.71
 
         # ==========================================================
         
