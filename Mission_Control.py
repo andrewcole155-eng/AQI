@@ -226,16 +226,20 @@ def calculate_seasonality(df):
     return day_stats, monthly_stats
 
 def calculate_advanced_metrics(hist_df):
-    """Calculates strict Portfolio Metrics (No synthetic Trade Projections)."""
+    """Calculates strict Portfolio Metrics."""
     if hist_df.empty: return {}
     
     df = hist_df.copy()
     df['daily_return'] = df['equity'].pct_change()
     
     # --- 1. RETURN & RISK ---
-    # UPDATE: Force strict start date for CAGR time calculation
-    start_date = pd.Timestamp("2025-05-24")
+    # FIX: Added tz='UTC' to match the incoming hist_df
+    start_date = pd.Timestamp("2025-05-24", tz='UTC') 
     current_date = df['timestamp'].max()
+    
+    # Ensure current_date is also UTC just in case
+    if current_date.tz is None:
+        current_date = current_date.tz_localize('UTC')
     
     days = (current_date - start_date).days
     if days < 1: days = 1
