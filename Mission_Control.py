@@ -618,16 +618,17 @@ with tab2:
         st.write("No logs found.")
 
 with tab3:
-    # 1. Get History (Now Raw)
+    # 1. Get History
     hist_df_raw = get_portfolio_history(api)
     
     if not hist_df_raw.empty and account:
         current_equity_raw = float(account['equity'])
 
-        # Ensure timezone awareness matches
-        now_ts = pd.Timestamp.now(tz='UTC') 
+        # === FIX: Ensure everything is UTC for comparison ===
         if hist_df_raw['timestamp'].dt.tz is None:
-            now_ts = pd.Timestamp.now()
+            hist_df_raw['timestamp'] = hist_df_raw['timestamp'].dt.tz_localize('UTC')
+        
+        now_ts = pd.Timestamp.now(tz='UTC') 
 
         # Append LIVE Raw Data
         live_row = pd.DataFrame([{
@@ -637,25 +638,20 @@ with tab3:
         hist_df_raw = pd.concat([hist_df_raw, live_row], ignore_index=True)
 
         # === DATA FORK: Create "Adjusted" Copy for Metrics Only ===
-        # We create a separate dataframe that subtracts the deposits.
-        # This allows us to calculate HONEST CAGR while showing REAL charts.
         hist_df_adj = hist_df_raw.copy()
         
-        # Deposit 1: Jan 24, 2026 ($68.10)
-        mask_1 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-01-24", tz=hist_df_adj['timestamp'].dt.tz)
-        hist_df_adj.loc[mask_1, 'equity'] = hist_df_adj.loc[mask_1, 'equity'] - 68.10
+        # Helper to ensure mask comparison is apples-to-apples
+        def apply_deposit(df, date_str, amount):
+            ts = pd.Timestamp(date_str, tz='UTC')
+            mask = df['timestamp'] >= ts
+            df.loc[mask, 'equity'] -= amount
+            return df
 
-        # Deposit 2: Feb 12, 2026 ($69.81)
-        mask_2 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-12", tz=hist_df_adj['timestamp'].dt.tz)
-        hist_df_adj.loc[mask_2, 'equity'] = hist_df_adj.loc[mask_2, 'equity'] - 69.81
-
-        # Deposit 3: Feb 16, 2026 ($139.75)
-        mask_3 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-16", tz=hist_df_adj['timestamp'].dt.tz)
-        hist_df_adj.loc[mask_3, 'equity'] = hist_df_adj.loc[mask_3, 'equity'] - 139.75
-
-        # Deposit 4: Feb 26, 2026 ($69.71)
-        mask_4 = hist_df_adj['timestamp'] >= pd.Timestamp("2026-02-26", tz=hist_df_adj['timestamp'].dt.tz)
-        hist_df_adj.loc[mask_4, 'equity'] = hist_df_adj.loc[mask_4, 'equity'] - 69.71
+        # Apply all deposits strictly
+        hist_df_adj = apply_deposit(hist_df_adj, "2026-01-24", 68.10)
+        hist_df_adj = apply_deposit(hist_df_adj, "2026-02-12", 69.81)
+        hist_df_adj = apply_deposit(hist_df_adj, "2026-02-16", 139.75)
+        hist_df_adj = apply_deposit(hist_df_adj, "2026-02-26", 69.71) # Mask 4
 
         # ==========================================================
         
