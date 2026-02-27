@@ -171,17 +171,18 @@ def parse_latest_run_logic(logs):
                     signals[ticker] = "✅ " + clean_msg
                 elif "Forcing HOLD" in line or "Margin" in line:
                     signals[ticker] = "⏸️ " + clean_msg
-                    # Check against 20.0 instead of 0.20 because it's extracted as 48.04
                     if confidence > 20.0: 
-                        # Use .1f% instead of .1% to prevent multiplying by 100
-                        watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": "Wait"})
+                        # --- ADDED: SMART WATCHLIST TAGGING ---
+                        tag = "🔥 Screaming Setup" if confidence > 80.0 else ("⚡ High Conviction" if confidence > 50.0 else "👀 Watching")
+                        watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": tag})
                 elif "Prediction" in line:
                     signals[ticker] = "🤔 " + clean_msg
                 elif "Error" in line:
                     signals[ticker] = "❌ " + clean_msg
                 else:
                     if "RAW PROPOSAL" in line and confidence > 20.0:
-                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": "Watching"})
+                         tag = "🔥 Screaming Setup" if confidence > 80.0 else ("⚡ High Conviction" if confidence > 50.0 else "👀 Watching")
+                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": tag})
 
         # Timestamp extraction
         if last_run_str == "Unknown":
@@ -470,7 +471,7 @@ if not api: st.stop()
 account, positions, orders = get_account_data(api)
 
 if account:
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col_var, col4 = st.columns(5) # Added a 5th column
     
     equity = float(account['equity'])
     last_equity = float(account['last_equity'])
@@ -479,9 +480,15 @@ if account:
     daily_pl_pct = (equity - last_equity) / last_equity * 100
     daily_pl_abs = equity - last_equity
     
+    # --- ADDED: VALUE AT RISK CALCULATION ---
+    # Assuming standard 3% SL across the board based on your bot config
+    total_var = sum([abs(float(p['market_value'])) * 0.03 for p in positions]) if positions else 0.0
+    var_pct = (total_var / equity) * 100 if equity > 0 else 0.0
+    
     col1.metric("Net Liquidity", f"${equity:,.2f}", f"{daily_pl_pct:.2f}%")
     col2.metric("Day P/L", f"${daily_pl_abs:,.2f}")
     col3.metric("Buying Power", f"${buying_power:,.2f}")
+    col_var.metric("Open Risk (VaR)", f"${total_var:,.2f}", f"-{var_pct:.2f}% Eq", delta_color="inverse")
     
     # Process Logs
     logs = read_bot_logs()
@@ -537,6 +544,23 @@ with tab1:
         sc3.metric("🧊 Cooldown", bot_states.get("COOLDOWN", 0))
     else:
         st.caption("Awaiting state confirmation from next cycle...")
+
+    # --- ADDED: NEURAL SKEW / MACRO BIAS ---
+    if parsed_signals:
+        long_count = sum(1 for s in parsed_signals.values() if "Long" in s)
+        short_count = sum(1 for s in parsed_signals.values() if "Short" in s)
+        hold_count = len(parsed_signals) - long_count - short_count
+        
+        st.markdown("#### ⚖️ Bot Macro Bias (Neural Skew)")
+        # Normalize for progress bar (0.0 to 1.0)
+        total_signals = len(parsed_signals)
+        skew_val = (long_count + (hold_count * 0.5)) / total_signals if total_signals > 0 else 0.5
+        
+        st.progress(skew_val)
+        b1, b2, b3 = st.columns(3)
+        b1.caption(f"🟢 Long Bias: {long_count}")
+        b2.caption(f"⚪ Neutral/Hold: {hold_count}")
+        b3.caption(f"🔴 Short Bias: {short_count}")
 
     st.divider()
 
