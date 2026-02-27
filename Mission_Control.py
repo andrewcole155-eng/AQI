@@ -497,10 +497,12 @@ if account:
     # Calculate "Time Since Last Run"
     status_label = "Bot Status"
     status_val = "Unknown"
-    
+
     if last_run_dt:
+        # Streamlit server time vs Log time safety alignment
         diff = datetime.now() - last_run_dt 
-        minutes_ago = int(diff.total_seconds() / 60)
+        seconds_ago = int(diff.total_seconds())
+        minutes_ago = int(seconds_ago / 60)
         
         if minutes_ago < 10:
             status_val = "🟢 Active"
@@ -510,8 +512,28 @@ if account:
             status_val = f"🔴 Stale ({int(minutes_ago/60)}h)"
     
     col4.metric(status_label, status_val, delta=f"Last Log: {last_run_str}", delta_color="off")
+    
+    # --- ADDED: BOT HEARTBEAT COUNTDOWN ---
+    if status_val == "🟢 Active" and seconds_ago < 300:
+        seconds_left = max(0, 300 - seconds_ago)
+        progress_pct = min(1.0, seconds_ago / 300.0)
+        st.progress(progress_pct, text=f"⏳ Next Market Scan in ~{seconds_left}s")
 
 st.divider()
+
+# 2. MAIN CONTENT TABS
+# --- ADDED: PENDING / STUCK ORDER ALERTS ---
+pending_orders = [o for o in orders if o['status'] in ['new', 'accepted', 'partially_filled', 'pending_new']]
+if pending_orders:
+    for po in pending_orders:
+        created_dt = pd.to_datetime(po['created_at']).tz_convert('UTC')
+        now_dt = pd.Timestamp.now(tz='UTC')
+        seconds_open = (now_dt - created_dt).total_seconds()
+        
+        if seconds_open > 60:
+            st.error(f"⚠️ **Execution Alert:** {po['side'].upper()} order for {po['qty']} {po['symbol']} has been pending for {int(seconds_open)}s! High slippage risk.")
+        else:
+            st.info(f"🔄 **Transmitting:** {po['side'].upper()} {po['qty']} {po['symbol']} (Routing to market: {int(seconds_open)}s ago)")
 
 # 2. MAIN CONTENT TABS
 tab1, tab2, tab3 = st.tabs(["🧠 Bot Logic & Positions", "📜 Raw Logs", "📈 Performance"])
@@ -641,6 +663,31 @@ with tab1:
             fig_alloc.add_annotation(text=f"Total Eq<br>${equity:,.0f}", x=0.5, y=0.5, font_size=14, showarrow=False)
             st.plotly_chart(fig_alloc, use_container_width=True)
             
+            # --- ADDED: SECTOR / INDEX EXPOSURE ---
+            ASSET_INDEX_MAP = {
+                'MARA': 'BLOK', 'PLTR': 'IGV', 'SOFI': 'XLF', 'HOOD': 'XLF',
+                'INTC': 'SOXX', 'IONQ': 'QTUM', 'OXY': 'XLE', 'PYPL': 'XLK',
+                'CSCO': 'XLK', 'HPE': 'XLK', 'F': 'XLY', 'BAC': 'XLF',
+                'KO': 'XLP', 'KR': 'XLP', 'PFE': 'XLV', 'GM': 'XLY'
+            }
+            
+            sector_data = {}
+            for p in positions:
+                sec = ASSET_INDEX_MAP.get(p['symbol'], 'Other')
+                sector_data[sec] = sector_data.get(sec, 0) + abs(float(p['market_value']))
+            
+            if sector_data:
+                df_sec = pd.DataFrame(list(sector_data.items()), columns=['Index', 'Exposure']).sort_values('Exposure', ascending=True)
+                fig_sec = px.bar(df_sec, x='Exposure', y='Index', orientation='h', text_auto='$.0f')
+                fig_sec.update_traces(marker_color='#569cd6', textposition='inside')
+                fig_sec.update_layout(
+                    height=120 + (len(df_sec) * 20), margin=dict(l=0, r=0, t=25, b=0),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    font={'color': '#cccccc'}, xaxis_visible=False,
+                    title=dict(text="Risk by Mapped Index", font=dict(size=14))
+                )
+                st.plotly_chart(fig_sec, use_container_width=True)
+
         # --- UPGRADED PORTFOLIO TABLE ---
         if positions:
             pos_data = []
