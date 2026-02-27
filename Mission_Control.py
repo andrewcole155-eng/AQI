@@ -124,9 +124,10 @@ def parse_latest_run_logic(logs):
     last_run_str = "Unknown"
     
     ts_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})')
+    # Extracts the number from "Conf: 48.04%"
     conf_pattern = re.compile(r'Conf:\s*([\d\.]+)%?')
     
-    # Define tags to explicitly ignore
+    # Define tags to explicitly ignore so they don't show up as Tickers
     ignore_tags = {'INFO', 'WARNING', 'ERROR', 'CRITICAL', 'DEBUG'}
     
     # Iterate reversed to get the LATEST log entry for each ticker first
@@ -141,11 +142,11 @@ def parse_latest_run_logic(logs):
         if valid_tickers:
             ticker = valid_tickers[-1] # Grab the actual ticker
             
-            # Extract confidence if present
+            # Extract confidence (e.g., 48.04)
             conf_match = conf_pattern.search(line)
             confidence = float(conf_match.group(1)) if conf_match else 0.0
             
-            # Populate Neural Conviction once per ticker
+            # Populate Neural Conviction once per ticker (already a 0-100 scale)
             if ticker not in neural_conviction and confidence > 0:
                 neural_conviction[ticker] = confidence
 
@@ -156,17 +157,19 @@ def parse_latest_run_logic(logs):
                     signals[ticker] = "✅ " + clean_msg
                 elif "Forcing HOLD" in line or "Margin" in line:
                     signals[ticker] = "⏸️ " + clean_msg
-                    if confidence > 0.20: 
-                        watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1%}", "Status": "Wait"})
+                    # Check against 20.0 instead of 0.20 because it's extracted as 48.04
+                    if confidence > 20.0: 
+                        # Use .1f% instead of .1% to prevent multiplying by 100
+                        watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": "Wait"})
                 elif "Prediction" in line:
                     signals[ticker] = "🤔 " + clean_msg
                 elif "Error" in line:
                     signals[ticker] = "❌ " + clean_msg
                 else:
-                    if "RAW PROPOSAL" in line and confidence > 0.20:
-                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1%}", "Status": "Watching"})
+                    if "RAW PROPOSAL" in line and confidence > 20.0:
+                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": "Watching"})
 
-        # Timestamp extraction (Catches the latest run time regardless of the line content)
+        # Timestamp extraction
         if last_run_str == "Unknown":
             match = ts_pattern.search(line)
             if match:
