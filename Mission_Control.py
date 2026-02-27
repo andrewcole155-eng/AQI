@@ -153,7 +153,7 @@ def parse_latest_run_logic(logs):
             conf_match = conf_pattern.search(line)
             confidence = float(conf_match.group(1)) if conf_match else 0.0
             
-            # --- NEW: Extract the Action State (0, 1, 2, 3) ---
+            # Extract the Action State (0, 1, 2, 3)
             action_match = re.search(r'(?:PROPOSAL|SIGNAL):\s*(\d)', line)
             action_str = action_map.get(action_match.group(1), "") if action_match else ""
             
@@ -167,7 +167,7 @@ def parse_latest_run_logic(logs):
                     signals[ticker] = "✅ " + clean_msg
                 elif "Forcing HOLD" in line or "Margin" in line:
                     signals[ticker] = "⏸️ " + clean_msg
-                    # FIXED: 20.0 threshold and .1f formatting
+                    # Checks against 20.0 threshold, formats string securely
                     if confidence > 20.0: 
                         tag = "🔥 Screaming Setup" if confidence > 80.0 else ("⚡ High Conviction" if confidence > 50.0 else "👀 Watching")
                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": tag})
@@ -592,7 +592,7 @@ with tab1:
 
     st.divider()
 
-    # --- 2. NEURAL CONVICTION RADAR ---
+# --- 2. NEURAL CONVICTION RADAR ---
     st.subheader("🧠 Neural Conviction Levels")
     if conviction_data:
         # Convert nested dictionary to flat DataFrame
@@ -783,7 +783,43 @@ with tab1:
 
         # --- RECENT ORDERS ---
         st.divider()
-        st.subheader("📜 Recent Orders")
+        
+        # --- ADDED: DAILY EXECUTION VELOCITY ---
+        today_utc = pd.Timestamp.now(tz='UTC').date()
+        if isinstance(orders, list):
+            trades_today = sum(1 for o in orders if isinstance(o, dict) and o.get('status') == 'filled' and pd.to_datetime(o.get('filled_at')).tz_convert('UTC').date() == today_utc)
+        else:
+            trades_today = 0
+        
+        c_ord1, c_ord2 = st.columns([3, 1])
+        c_ord1.subheader("📜 Recent Orders")
+        if trades_today > 4:
+            c_ord2.error(f"⚠️ Trades Today: {trades_today}")
+        else:
+            c_ord2.info(f"⚡ Trades Today: {trades_today}")
+
+        if orders and isinstance(orders, list):
+            order_data = []
+            for o in orders[:5]: 
+                if isinstance(o, dict):
+                    t = o.get('created_at', '')
+                    t_fmt = t[5:16].replace('T', ' ') if len(t) >= 16 else t
+                    
+                    order_data.append({
+                        "Time": t_fmt,
+                        "Ticker": o.get('symbol', 'N/A'),
+                        "Side": o.get('side', 'N/A').upper(),
+                        "Qty": o.get('qty', '0'),
+                        "Status": o.get('status', 'N/A').title()
+                    })
+            
+            if order_data:
+                df_orders = pd.DataFrame(order_data)
+                st.dataframe(df_orders, width="stretch", hide_index=True)
+            else:
+                st.caption("No recent orders found.")
+        else:
+            st.caption("No recent orders found.")
 
 with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
