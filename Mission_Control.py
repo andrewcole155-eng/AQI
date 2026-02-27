@@ -111,8 +111,7 @@ def get_portfolio_history(_api):
         history = _api.get_portfolio_history(period='all', timeframe='1D')
         
         df = pd.DataFrame({'timestamp': history.timestamp, 'equity': history.equity})
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-        
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC')
         # --- UPDATE: Filter for Start Date (24 May 2025) ---
         start_date = pd.Timestamp("2025-06-01")
         df = df[df['timestamp'] >= start_date].copy()
@@ -462,6 +461,12 @@ with st.sidebar:
         # Performance baseline for sidebar
         hist_df_adj_side = hist_df_raw.copy()
         # Apply latest deposit for sidebar accuracy (honesty check)
+        # --- FIX: Ensure UTC alignment to prevent TypeError ---
+        if hist_df_adj_side['timestamp'].dt.tz is None:
+            hist_df_adj_side['timestamp'] = hist_df_adj_side['timestamp'].dt.tz_localize('UTC')
+        else:
+            hist_df_adj_side['timestamp'] = hist_df_adj_side['timestamp'].dt.tz_convert('UTC')
+
         ts_last = pd.Timestamp("2026-02-26", tz='UTC')
         mask_last = hist_df_adj_side['timestamp'] >= ts_last
         hist_df_adj_side.loc[mask_last, 'equity'] -= 69.71
