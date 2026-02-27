@@ -1005,11 +1005,20 @@ with tab3:
             st.plotly_chart(fig_eq, use_container_width=True)
 
         with col_perf2:
-            st.markdown("### 📉 Real Risk (Drawdown)")
-            # Using RAW DF (Drawdowns will look smaller relative to new higher peaks)
+            # --- ADDED: UNDERWATER DURATION CALCULATION ---
+            max_eq_idx = hist_df_raw['equity'].idxmax()
+            last_timestamp = hist_df_raw['timestamp'].iloc[-1]
+            days_underwater = (last_timestamp - hist_df_raw['timestamp'].loc[max_eq_idx]).days
+            uw_text = f" ({days_underwater} Days in Drawdown)" if days_underwater > 0 else " (At All-Time High 🚀)"
+            
+            st.markdown(f"### 📉 Real Risk{uw_text}")
+            
             fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
+            
+            # Add vertical line showing the peak
+            fig_dd.add_vline(x=hist_df_raw['timestamp'].loc[max_eq_idx], line_dash="dot", line_color="#cccccc", annotation_text="Peak")
             st.plotly_chart(fig_dd, use_container_width=True)
 
         # --- ADDED: QUANTITATIVE RISK ANALYTICS ---
@@ -1027,11 +1036,19 @@ with tab3:
         skewness = df_clean['daily_return'].skew()
         kurtosis = df_clean['daily_return'].kurtosis()
         
-        cq1, cq2, cq3, cq4 = st.columns(4)
+        # --- ADDED: THE KELLY CRITERION ---
+        win_rate_val = metrics.get("Win Rate (Daily)", 0.0)
+        # Kelly Formula = W - [(1 - W) / R]
+        kelly_pct = win_rate_val - ((1 - win_rate_val) / payoff_ratio) if payoff_ratio > 0 else 0
+        # Half-Kelly is standard institutional practice to reduce volatility
+        half_kelly = max(0, kelly_pct / 2)
+        
+        cq1, cq2, cq3, cq4, cq5 = st.columns(5) # Expand to 5 columns
         cq1.metric("Avg Up-Day", f"{avg_win*100:.2f}%")
         cq2.metric("Avg Down-Day", f"-{avg_loss*100:.2f}%")
         cq3.metric("Payoff Ratio", f"{payoff_ratio:.2f}", delta="Optimal > 1.5" if payoff_ratio > 1.5 else "Sub-Optimal", delta_color="normal" if payoff_ratio > 1.5 else "inverse")
-        cq4.metric("Kurtosis (Fat Tails)", f"{kurtosis:.2f}", delta="High Tail Risk" if kurtosis > 3 else "Normal Risk", delta_color="inverse" if kurtosis > 3 else "normal")
+        cq4.metric("Kurtosis", f"{kurtosis:.2f}", delta="Fat Tails" if kurtosis > 3 else "Normal", delta_color="inverse" if kurtosis > 3 else "normal")
+        cq5.metric("Half-Kelly Sizing", f"{half_kelly*100:.1f}%", delta="Suggested Trade Risk", delta_color="off")
 
         # 2. Charts: Distribution & Rolling Volatility
         col_q1, col_q2 = st.columns(2)
@@ -1175,15 +1192,78 @@ with tab3:
         else:
             st.info("Not enough data points for Physics analysis.")
 
-        # --- SECTION 5: FUTURE PROJECTIONS ---
+        # --- SECTION 5: PROBABILISTIC FORECASTING (MONTE CARLO) ---
         st.divider()
         
-        # Determine which CAGR to use for the projection
-        projection_rate = manual_cagr if use_manual_cagr else valid_cagr
-        proj_label = "Manual" if use_manual_cagr else "Adj."
+        st.markdown(f"### 🎲 Monte Carlo Forward Simulation (1-Year Probability Cone)")
+        st.caption("Runs 100 randomized future market paths based on the bot's historical mean return and volatility.")
         
-        # Calculate projection
-        proj_df = calculate_future_projections(current_equity_raw, projection_rate)
+        # We need numpy for the simulations
+        import numpy as np 
+        
+        if not df_clean.empty and len(df_clean) > 5:
+            mean_ret = df_clean['daily_return'].mean()
+            std_ret = df_clean['daily_return'].std()
+            
+            # Override with manual inputs if the toggle is checked in the sidebar
+            if use_manual_cagr:
+                mean_ret = manual_cagr / 252 # Convert annual to daily
+                st.warning(f"Running simulation with forced manual input (CAGR: {manual_cagr*100:.1f}%)")
+            
+            days_to_sim = 252 # 1 Trading Year
+            sims = 100
+            np.random.seed(42) # Seed to prevent violent flashing on every refresh
+            
+            # Generate random normal returns
+            random_returns = np.random.normal(mean_ret, std_ret, (days_to_sim, sims))
+            
+            # Calculate cumulative price paths
+            price_paths = current_equity_raw * np.cumprod(1 + random_returns, axis=0)
+            mc_df = pd.DataFrame(price_paths)
+            
+            # Extract Quantiles (5th, 50th, 95th Percentiles)
+            p5 = mc_df.quantile(0.05, axis=1)
+            p50 = mc_df.quantile(0.50, axis=1)
+            p95 = mc_df.quantile(0.95, axis=1)
+            
+            # Create Future Dates
+            last_date = df_clean['timestamp'].iloc[-1]
+            future_dates = [last_date + pd.Timedelta(days=i) for i in range(1, days_to_sim + 1)]
+            
+            fig_mc = go.Figure()
+            
+            # Add Top Boundary (95th Percentile)
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p95, mode='lines', line=dict(color='#00ff41', width=1, dash='dash'), name='95th Pctl (Bull Case)'))
+            
+            # Add Bottom Boundary (5th Percentile) and fill area between
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p5, mode='lines', line=dict(color='#ff4b4b', width=1, dash='dash'), fill='tonexty', fillcolor='rgba(255, 255, 255, 0.05)', name='5th Pctl (Bear Case)'))
+            
+            # Add Median Path
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p50, mode='lines', line=dict(color='#569cd6', width=3), name='Median Expected'))
+            
+            fig_mc.update_layout(
+                height=400, margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc"),
+                yaxis_title="Projected Equity ($)", xaxis_title=None,
+                legend=dict(orientation="h", y=1.1, x=0)
+            )
+            
+            c_mc1, c_mc2 = st.columns([3, 1])
+            with c_mc1:
+                st.plotly_chart(fig_mc, use_container_width=True)
+            with c_mc2:
+                # Calculate ending values
+                val_med = p50.iloc[-1]
+                val_bull = p95.iloc[-1]
+                val_bear = p5.iloc[-1]
+                
+                st.metric("Expected Value (1 Yr)", f"${val_med:,.2f}", f"{((val_med/current_equity_raw)-1)*100:.1f}%")
+                st.metric("Bull Case (Top 5%)", f"${val_bull:,.2f}", f"+{((val_bull/current_equity_raw)-1)*100:.1f}%")
+                st.metric("Bear Case (Bottom 5%)", f"${val_bear:,.2f}", f"{((val_bear/current_equity_raw)-1)*100:.1f}%", delta_color="inverse")
+                
+        else:
+            st.info("Awaiting enough historical data to generate Monte Carlo simulations.")
         
         st.markdown(f"### 🔮 Future Projections (Based on {proj_label} CAGR: {projection_rate:.1%})")
         
