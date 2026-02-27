@@ -1017,8 +1017,17 @@ with tab3:
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             
+            # --- FIX: Safely extract and convert the peak timestamp to a string ---
+            peak_timestamp = hist_df_raw['timestamp'].loc[max_eq_idx]
+            # If there are duplicate max indexes, grab the first one safely
+            if isinstance(peak_timestamp, pd.Series):
+                peak_timestamp = peak_timestamp.iloc[0]
+            
+            # Convert to string to bypass Plotly's mathematical midpoint calculation bug
+            peak_str = peak_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            
             # Add vertical line showing the peak
-            fig_dd.add_vline(x=hist_df_raw['timestamp'].loc[max_eq_idx], line_dash="dot", line_color="#cccccc", annotation_text="Peak")
+            fig_dd.add_vline(x=peak_str, line_dash="dot", line_color="#cccccc", annotation_text="Peak")
             st.plotly_chart(fig_dd, use_container_width=True)
 
         # --- ADDED: QUANTITATIVE RISK ANALYTICS ---
