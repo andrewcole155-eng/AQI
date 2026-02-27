@@ -508,30 +508,38 @@ if account:
     
     # --- ADDED: BOT HEARTBEAT COUNTDOWN ---
     if status_val == "🟢 Active" and seconds_ago < 300:
-        # 1. Prevent negative time if server clocks are slightly skewed
         safe_seconds_ago = max(0, seconds_ago) 
         seconds_left = max(0, 300 - safe_seconds_ago)
         
-        # 2. Strictly clamp the progress bar between 0.0 and 1.0
-        progress_pct = max(0.0, min(1.0, safe_seconds_ago / 300.0))
+        # FIX: Convert to strict integer 0-100 to prevent Streamlit float exceptions
+        progress_val = int(max(0, min(100, (safe_seconds_ago / 300.0) * 100)))
         
-        st.progress(progress_pct, text=f"⏳ Next Market Scan in ~{seconds_left}s")
+        st.progress(progress_val, text=f"⏳ Next Market Scan in ~{seconds_left}s")
 
 st.divider()
 
 # 2. MAIN CONTENT TABS
 # --- ADDED: PENDING / STUCK ORDER ALERTS ---
-pending_orders = [o for o in orders if o['status'] in ['new', 'accepted', 'partially_filled', 'pending_new']]
-if pending_orders:
+if isinstance(orders, list):
+    pending_orders = [o for o in orders if isinstance(o, dict) and o.get('status') in ['new', 'accepted', 'partially_filled', 'pending_new']]
     for po in pending_orders:
-        created_dt = pd.to_datetime(po['created_at']).tz_convert('UTC')
-        now_dt = pd.Timestamp.now(tz='UTC')
-        seconds_open = (now_dt - created_dt).total_seconds()
-        
-        if seconds_open > 60:
-            st.error(f"⚠️ **Execution Alert:** {po['side'].upper()} order for {po['qty']} {po['symbol']} has been pending for {int(seconds_open)}s! High slippage risk.")
-        else:
-            st.info(f"🔄 **Transmitting:** {po['side'].upper()} {po['qty']} {po['symbol']} (Routing to market: {int(seconds_open)}s ago)")
+        created_at = po.get('created_at')
+        if created_at:
+            try:
+                created_dt = pd.to_datetime(created_at).tz_convert('UTC')
+                now_dt = pd.Timestamp.now(tz='UTC')
+                seconds_open = max(0, (now_dt - created_dt).total_seconds())
+                
+                side_str = po.get('side', 'UNKNOWN').upper()
+                qty_str = po.get('qty', '?')
+                sym_str = po.get('symbol', '?')
+                
+                if seconds_open > 60:
+                    st.error(f"⚠️ **Execution Alert:** {side_str} order for {qty_str} {sym_str} has been pending for {int(seconds_open)}s! High slippage risk.")
+                else:
+                    st.info(f"🔄 **Transmitting:** {side_str} {qty_str} {sym_str} (Routing to market: {int(seconds_open)}s ago)")
+            except Exception:
+                pass
 
 # 2. MAIN CONTENT TABS
 tab1, tab2, tab3 = st.tabs(["🧠 Bot Logic & Positions", "📜 Raw Logs", "📈 Performance"])
@@ -548,7 +556,7 @@ with tab1:
     st.markdown("### 🌡️ Market Pulse")
     s_col1, s_col2 = st.columns([5, 1])
     with s_col1:
-        st.progress(sentiment_score)
+        st.progress(int(max(0, min(100, sentiment_score * 100))))
     with s_col2:
         if avg_market_move > 0.5: st.success("BULLISH")
         elif avg_market_move < -0.5: st.error("BEARISH")
@@ -576,7 +584,7 @@ with tab1:
         total_signals = len(parsed_signals)
         skew_val = (long_count + (hold_count * 0.5)) / total_signals if total_signals > 0 else 0.5
         
-        st.progress(skew_val)
+        st.progress(int(max(0, min(100, skew_val * 100))))
         b1, b2, b3 = st.columns(3)
         b1.caption(f"🟢 Long Bias: {long_count}")
         b2.caption(f"⚪ Neutral/Hold: {hold_count}")
@@ -669,6 +677,11 @@ with tab1:
             fig_alloc.add_annotation(text=f"Total Eq<br>${equity:,.0f}", x=0.5, y=0.5, font_size=14, showarrow=False)
             st.plotly_chart(fig_alloc, use_container_width=True)
             
+            # --- ADDED: NEXT SLOT DEPLOYMENT ESTIMATE ---
+            # Based on your bot's active_ticker_count = 8 logic
+            est_slot_size = equity / 8
+            st.caption(f"🤖 **Bot Pre-Auth:** Estimated next trade size is **~${est_slot_size:,.2f}** per signal.")
+            
             # --- ADDED: SECTOR / INDEX EXPOSURE ---
             ASSET_INDEX_MAP = {
                 'MARA': 'BLOK', 'PLTR': 'IGV', 'SOFI': 'XLF', 'HOOD': 'XLF',
@@ -713,12 +726,18 @@ with tab1:
 
                 # Calculate Days Held (Max 5)
                 days_held = 0
-                for o in orders:
-                    if o['symbol'] == sym and o['status'] == 'filled':
-                        filled_dt = pd.to_datetime(o['filled_at']).tz_convert('UTC')
-                        now_dt = pd.Timestamp.now(tz='UTC')
-                        days_held = (now_dt - filled_dt).days
-                        break
+                if isinstance(orders, list):
+                    for o in orders:
+                        if isinstance(o, dict) and o.get('symbol') == sym and o.get('status') == 'filled':
+                            filled_at = o.get('filled_at')
+                            if filled_at:
+                                try:
+                                    filled_dt = pd.to_datetime(filled_at).tz_convert('UTC')
+                                    now_dt = pd.Timestamp.now(tz='UTC')
+                                    days_held = max(0, (now_dt - filled_dt).days)
+                                except Exception:
+                                    pass
+                            break
 
                 pos_data.append({
                     "Ticker": sym, 
@@ -741,31 +760,30 @@ with tab1:
                 },
                 hide_index=True
             )
+            # --- ADDED: THE FLASHPOINT ALERT ---
+            st.markdown("##### 🎯 Immediate Flashpoints")
+            closest_tp, closest_sl = None, None
+            max_tp_prog, min_sl_prog = 0.0, 1.0
+            
+            for p_data in pos_data:
+                prog = p_data["Journey"]
+                if prog > max_tp_prog:
+                    max_tp_prog, closest_tp = prog, p_data["Ticker"]
+                if prog < min_sl_prog:
+                    min_sl_prog, closest_sl = prog, p_data["Ticker"]
+            
+            f1, f2 = st.columns(2)
+            if closest_tp and max_tp_prog > 0.0: 
+                f1.success(f"🟢 **Closest to TP:** {closest_tp} ({max_tp_prog*100:.0f}%)")
+            if closest_sl and min_sl_prog < 1.0: 
+                f2.error(f"🔴 **Closest to SL:** {closest_sl} ({(1-min_sl_prog)*100:.0f}%)")
+                
         else:
             st.caption("No active positions currently held.")
 
         # --- RECENT ORDERS ---
         st.divider()
         st.subheader("📜 Recent Orders")
-        if orders:
-            order_data = []
-            for o in orders[:5]: 
-                t = o['created_at']
-                t_fmt = t[5:16].replace('T', ' ') 
-                
-                order_data.append({
-                    "Time": t_fmt,
-                    "Ticker": o['symbol'],
-                    "Side": o['side'].upper(),
-                    "Qty": o['qty'],
-                    "Status": o['status'].title()
-                })
-            
-            df_orders = pd.DataFrame(order_data)
-            # FIX: Updated width parameter
-            st.dataframe(df_orders, width="stretch", hide_index=True)
-        else:
-            st.caption("No recent orders found.")
 
 with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
