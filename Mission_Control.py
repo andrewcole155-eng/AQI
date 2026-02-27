@@ -448,29 +448,9 @@ with st.sidebar:
     
     st.divider()
     st.subheader("🔮 Projection Tuning")
-    
-    # --- ADDED: PERFORMANCE VS SIMULATION OVERVIEW ---
-    # We need to calculate these here for the sidebar to see them
-    hist_df_raw_side = get_portfolio_history(api)
-    if not hist_df_raw_side.empty:
-        # Metrics use adjusted data to be honest about deposits
-        # We simulate this calculation briefly for the sidebar
-        current_eq_side = float(account['equity'])
-        metrics_side = calculate_advanced_metrics(hist_df_raw_side)
-        actual_cagr = metrics_side.get("CAGR", 0.0)
-        
-        st.write(f"**Current CAGR:** {actual_cagr:.1%}")
-        
-        use_manual_cagr = st.checkbox("Manual CAGR Override")
-        manual_cagr = st.slider("Target Simulation CAGR %", 0, 200, int(actual_cagr*100)) / 100
-        
-        # Display the "Drift" - the difference between reality and your goal
-        drift = manual_cagr - actual_cagr
-        if use_manual_cagr:
-            st.caption(f"Simulation Drift: {drift:+.1%} vs Reality")
-    else:
-        use_manual_cagr = False
-        manual_cagr = 0.25
+    # Allows you to override the CAGR for projections
+    use_manual_cagr = st.checkbox("Manual CAGR Override")
+    manual_cagr = st.slider("Target CAGR %", 0, 100, 25) / 100
     
     if st.button("Force Refresh Now", type="primary"):
         st.cache_data.clear() 
@@ -902,7 +882,7 @@ with tab3:
     if not hist_df_raw.empty and account:
         current_equity_raw = float(account['equity'])
 
-        # Ensure everything is UTC for comparison
+        # === FIX: Ensure everything is UTC for comparison ===
         if hist_df_raw['timestamp'].dt.tz is None:
             hist_df_raw['timestamp'] = hist_df_raw['timestamp'].dt.tz_localize('UTC')
         
@@ -918,28 +898,42 @@ with tab3:
         # === DATA FORK: Create "Adjusted" Copy for Metrics Only ===
         hist_df_adj = hist_df_raw.copy()
         
+        # Helper to ensure mask comparison is apples-to-apples
         def apply_deposit(df, date_str, amount):
             ts = pd.Timestamp(date_str, tz='UTC')
             mask = df['timestamp'] >= ts
             df.loc[mask, 'equity'] -= amount
             return df
 
-        # Apply known deposits
+        # Apply all deposits strictly
         hist_df_adj = apply_deposit(hist_df_adj, "2026-01-24", 68.10)
         hist_df_adj = apply_deposit(hist_df_adj, "2026-02-12", 69.81)
         hist_df_adj = apply_deposit(hist_df_adj, "2026-02-16", 139.75)
-        hist_df_adj = apply_deposit(hist_df_adj, "2026-02-26", 69.71)
+        hist_df_adj = apply_deposit(hist_df_adj, "2026-02-26", 69.71) # Mask 4
 
+        # ==========================================================
+        
         # --- CALCULATIONS ---
+        
+        # A. METRICS: Use ADJUSTED Data (Honest Strategy Score)
         metrics = calculate_advanced_metrics(hist_df_adj)
         scorecard_df = create_scorecard_df(metrics)
         inst_score = calculate_institutional_score(metrics)
+        
+        # Capture the honest CAGR
         valid_cagr = metrics.get("CAGR", 0.0)
         
+        # B. VISUALS: Use RAW Data
         dd_df = calculate_drawdown(hist_df_raw) 
         phys_df = calculate_3d_physics(hist_df_raw) 
         day_stats, monthly_stats = calculate_seasonality(hist_df_raw)
         
+        # C. PROJECTIONS: Use valid_cagr (or manual) applied to Real Money
+        projection_rate = manual_cagr if use_manual_cagr else valid_cagr
+        
+        # FIXED LINE BELOW: Added the closing parenthesis
+        proj_df = calculate_future_projections(current_equity_raw, projection_rate)
+
         # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
         col_gauge, col_scorecard = st.columns([1, 2])
         
@@ -966,10 +960,28 @@ with tab3:
             ))
             fig_gauge.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=10), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
             st.plotly_chart(fig_gauge, use_container_width=True)
+            
+            if inst_score > 80:
+                st.markdown("<div style='text-align: center; color: #00ff41; font-weight: bold;'>🚀 INSTITUTIONAL GRADE</div>", unsafe_allow_html=True)
+            elif inst_score > 50:
+                st.markdown("<div style='text-align: center; color: #ffb000; font-weight: bold;'>⚡ PROFESSIONAL RETAIL</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='text-align: center; color: #ff4b4b; font-weight: bold;'>🎲 DEGEN / RETAIL</div>", unsafe_allow_html=True)
 
         with col_scorecard:
             st.markdown("### 📊 Metrics Breakdown (Adj. for Deposits)")
-            st.dataframe(scorecard_df, width="stretch", hide_index=True, height=280)
+            st.dataframe(
+                scorecard_df,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "METRIC": st.column_config.TextColumn("Metric", width="medium"),
+                    "YOURS": st.column_config.TextColumn("Your Bot", width="small"),
+                    "BENCHMARK": st.column_config.TextColumn("Target", width="small"),
+                    "VERDICT": st.column_config.TextColumn("Verdict", width="small"),
+                },
+                height=280
+            )
 
         st.divider()
 
@@ -977,124 +989,325 @@ with tab3:
         col_perf1, col_perf2 = st.columns(2)
         with col_perf1:
             st.markdown(f"### 📈 Real Equity Curve (${current_equity_raw:,.2f})")
+            
+            # Using RAW DF for the chart
+            max_equity = hist_df_raw['equity'].max()
             fig_eq = px.area(hist_df_raw, x='timestamp', y='equity')
             fig_eq.update_traces(line_color='#00ff41', fillcolor='rgba(0, 255, 65, 0.1)')
-            fig_eq.update_layout(margin=dict(l=0, r=0, t=10, b=0), showlegend=False, height=300, yaxis=dict(range=[hist_df_raw['equity'].min() * 0.95, hist_df_raw['equity'].max() * 1.02]))
+            fig_eq.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0),
+                xaxis_title=None,
+                yaxis_title=None,
+                showlegend=False,
+                height=300,
+                yaxis=dict(range=[hist_df_raw['equity'].min() * 0.95, max_equity * 1.02], rangemode="normal")
+            )
             st.plotly_chart(fig_eq, use_container_width=True)
 
         with col_perf2:
+            # --- ADDED: UNDERWATER DURATION CALCULATION ---
             max_eq_idx = hist_df_raw['equity'].idxmax()
             last_timestamp = hist_df_raw['timestamp'].iloc[-1]
             days_underwater = (last_timestamp - hist_df_raw['timestamp'].loc[max_eq_idx]).days
-            uw_text = f" ({days_underwater} Days Underwater)" if days_underwater > 0 else " (At Peak 🚀)"
+            uw_text = f" ({days_underwater} Days in Drawdown)" if days_underwater > 0 else " (At All-Time High 🚀)"
             
             st.markdown(f"### 📉 Real Risk{uw_text}")
+            
             fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
-            fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
+            fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             
-            # Safe Annotation logic
+            # --- FIX: Safely extract and convert the peak timestamp to a string ---
             peak_timestamp = hist_df_raw['timestamp'].loc[max_eq_idx]
-            if isinstance(peak_timestamp, pd.Series): peak_timestamp = peak_timestamp.iloc[0]
+            # If there are duplicate max indexes, grab the first one safely
+            if isinstance(peak_timestamp, pd.Series):
+                peak_timestamp = peak_timestamp.iloc[0]
+            
+            # Convert to string to bypass Plotly's mathematical midpoint calculation bug
             peak_str = peak_timestamp.strftime('%Y-%m-%d %H:%M:%S')
             
-            fig_dd.add_vline(x=peak_str, line_dash="dot", line_color="#cccccc")
-            fig_dd.add_annotation(x=peak_str, y=1.0, yref="paper", text="Peak", showarrow=False, font=dict(color="#cccccc"), yshift=10)
+            # Add vertical line showing the peak
+            fig_dd.add_vline(x=peak_str, line_dash="dot", line_color="#cccccc", annotation_text="Peak")
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # --- SECTION 3: QUANTITATIVE RISK ANALYTICS ---
+        # --- ADDED: QUANTITATIVE RISK ANALYTICS ---
         st.divider()
         st.subheader("🔬 Quantitative Risk Analytics")
         
+        # Ensure daily returns exist for math
         hist_df_raw['daily_return'] = hist_df_raw['equity'].pct_change()
         df_clean = hist_df_raw.dropna(subset=['daily_return'])
         
-        if not df_clean.empty:
-            avg_win = df_clean[df_clean['daily_return'] > 0]['daily_return'].mean()
-            avg_loss = abs(df_clean[df_clean['daily_return'] < 0]['daily_return'].mean())
-            payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
-            
-            # Kelly Criterion
-            win_rate_val = metrics.get("Win Rate (Daily)", 0.0)
-            kelly_pct = win_rate_val - ((1 - win_rate_val) / payoff_ratio) if payoff_ratio > 0 else 0
-            half_kelly = max(0, kelly_pct / 2)
-            
-            cq1, cq2, cq3, cq4, cq5 = st.columns(5)
-            cq1.metric("Avg Up-Day", f"{avg_win*100:.2f}%")
-            cq2.metric("Avg Down-Day", f"-{avg_loss*100:.2f}%")
-            cq3.metric("Payoff Ratio", f"{payoff_ratio:.2f}")
-            cq4.metric("Kurtosis", f"{df_clean['daily_return'].kurtosis():.2f}")
-            cq5.metric("Half-Kelly Size", f"{half_kelly*100:.1f}%")
+        # 1. Math out Expectancy & Skew
+        avg_win = df_clean[df_clean['daily_return'] > 0]['daily_return'].mean()
+        avg_loss = abs(df_clean[df_clean['daily_return'] < 0]['daily_return'].mean())
+        payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
+        skewness = df_clean['daily_return'].skew()
+        kurtosis = df_clean['daily_return'].kurtosis()
+        
+        # --- ADDED: THE KELLY CRITERION ---
+        win_rate_val = metrics.get("Win Rate (Daily)", 0.0)
+        # Kelly Formula = W - [(1 - W) / R]
+        kelly_pct = win_rate_val - ((1 - win_rate_val) / payoff_ratio) if payoff_ratio > 0 else 0
+        # Half-Kelly is standard institutional practice to reduce volatility
+        half_kelly = max(0, kelly_pct / 2)
+        
+        cq1, cq2, cq3, cq4, cq5 = st.columns(5) # Expand to 5 columns
+        cq1.metric("Avg Up-Day", f"{avg_win*100:.2f}%")
+        cq2.metric("Avg Down-Day", f"-{avg_loss*100:.2f}%")
+        cq3.metric("Payoff Ratio", f"{payoff_ratio:.2f}", delta="Optimal > 1.5" if payoff_ratio > 1.5 else "Sub-Optimal", delta_color="normal" if payoff_ratio > 1.5 else "inverse")
+        cq4.metric("Kurtosis", f"{kurtosis:.2f}", delta="Fat Tails" if kurtosis > 3 else "Normal", delta_color="inverse" if kurtosis > 3 else "normal")
+        cq5.metric("Half-Kelly Sizing", f"{half_kelly*100:.1f}%", delta="Suggested Trade Risk", delta_color="off")
 
-            col_q1, col_q2 = st.columns(2)
-            with col_q1:
-                st.markdown("**📊 Return Distribution**")
-                fig_dist = px.histogram(df_clean, x='daily_return', nbins=50, color_discrete_sequence=['#569cd6'])
-                fig_dist.add_vline(x=0, line_dash="dash", line_color="#ff4b4b")
-                fig_dist.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_tickformat='.1%', font=dict(color="#cccccc"))
-                st.plotly_chart(fig_dist, use_container_width=True)
+        # 2. Charts: Distribution & Rolling Volatility
+        col_q1, col_q2 = st.columns(2)
+        
+        with col_q1:
+            st.markdown("**📊 Return Distribution**")
+            fig_dist = px.histogram(
+                df_clean, x='daily_return', nbins=50, 
+                marginal='box', color_discrete_sequence=['#569cd6']
+            )
+            fig_dist.add_vline(x=0, line_dash="dash", line_color="#ff4b4b")
+            fig_dist.update_layout(
+                height=280, margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                xaxis_tickformat='.1%', font=dict(color="#cccccc"),
+                xaxis_title="Daily Return %", yaxis_title="Frequency"
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
 
-            with col_q2:
-                st.markdown("**🌪️ 21-Day Rolling Volatility (Annualized)**")
-                hist_df_raw['rolling_vol'] = hist_df_raw['daily_return'].rolling(21).std() * (252**0.5) * 100
-                fig_vol = px.line(hist_df_raw, x='timestamp', y='rolling_vol')
-                fig_vol.update_traces(line_color='#ffb000')
-                fig_vol.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', yaxis_ticksuffix="%", font=dict(color="#cccccc"))
-                st.plotly_chart(fig_vol, use_container_width=True)
+        with col_q2:
+            st.markdown("**🌪️ 21-Day Rolling Volatility (Annualized)**")
+            hist_df_raw['rolling_vol'] = hist_df_raw['daily_return'].rolling(21).std() * (252**0.5) * 100
+            fig_vol = px.line(hist_df_raw, x='timestamp', y='rolling_vol')
+            fig_vol.update_traces(line_color='#ffb000')
+            fig_vol.update_layout(
+                height=280, margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                yaxis_ticksuffix="%", xaxis_title=None, yaxis_title="Volatility %",
+                font=dict(color="#cccccc")
+            )
+            st.plotly_chart(fig_vol, use_container_width=True)
 
-        # --- SECTION 4: SEASONALITY ---
+        # --- SECTION 3: TIME INTELLIGENCE ---
         st.divider()
         st.subheader("⏳ Time Intelligence (Seasonality)")
+        st.caption("Bars = Average Return (Left Axis). Lines = Win Rate % (Right Axis).")
+        
         c_time1, c_time2 = st.columns(2)
+        
         with c_time1:
             st.markdown("**📅 Day of Week**")
             fig_dow = go.Figure()
-            fig_dow.add_trace(go.Bar(x=day_stats.index, y=day_stats['Avg_Return'], marker_color='#00ff41', yaxis='y1'))
-            fig_dow.add_trace(go.Scatter(x=day_stats.index, y=day_stats['Win_Rate'], mode='lines+markers', line=dict(color='#ffb000'), yaxis='y2'))
-            fig_dow.update_layout(height=350, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', showlegend=False, yaxis2=dict(overlaying='y', side='right', range=[0, 110]))
+            fig_dow.add_trace(go.Bar(
+                x=day_stats.index,
+                y=day_stats['Avg_Return'],
+                name='Avg Return',
+                marker_color=day_stats['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'),
+                yaxis='y1'
+            ))
+            fig_dow.add_trace(go.Scatter(
+                x=day_stats.index,
+                y=day_stats['Win_Rate'],
+                name='Win Rate %',
+                mode='lines+markers+text',
+                text=day_stats['Win_Rate'].apply(lambda x: f"{x:.0f}%"),
+                textposition="top center",
+                line=dict(color='#ffb000', width=3),
+                yaxis='y2'
+            ))
+            fig_dow.update_layout(
+                yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
+                yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
+                showlegend=False,
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc")
+            )
             st.plotly_chart(fig_dow, use_container_width=True)
+
         with c_time2:
             st.markdown("**🗓️ Month of Year**")
             fig_moy = go.Figure()
-            fig_moy.add_trace(go.Bar(x=monthly_stats.index, y=monthly_stats['Avg_Return'], marker_color='#569cd6', yaxis='y1'))
-            fig_moy.add_trace(go.Scatter(x=monthly_stats.index, y=monthly_stats['Win_Rate'], mode='lines+markers', line=dict(color='#ffb000'), yaxis='y2'))
-            fig_moy.update_layout(height=350, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', showlegend=False, yaxis2=dict(overlaying='y', side='right', range=[0, 110]))
+            fig_moy.add_trace(go.Bar(
+                x=monthly_stats.index,
+                y=monthly_stats['Avg_Return'],
+                name='Avg Return',
+                marker_color=monthly_stats['Avg_Return'].apply(lambda x: '#00ff41' if x >= 0 else '#ff4b4b'),
+                yaxis='y1'
+            ))
+            fig_moy.add_trace(go.Scatter(
+                x=monthly_stats.index,
+                y=monthly_stats['Win_Rate'],
+                name='Win Rate %',
+                mode='lines+markers+text',
+                text=monthly_stats['Win_Rate'].apply(lambda x: f"{x:.0f}%"),
+                textposition="top center",
+                line=dict(color='#ffb000', width=3),
+                yaxis='y2'
+            ))
+            fig_moy.update_layout(
+                yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
+                yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
+                showlegend=False,
+                height=350,
+                margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc")
+            )
             st.plotly_chart(fig_moy, use_container_width=True)
 
-        # --- SECTION 5: 3D PHYSICS LAB ---
+        # --- SECTION 4: 3D PHYSICS LAB ---
         st.divider()
         st.subheader("🧊 Angel 3D Trajectory (Phase Space)")
-        if not phys_df.empty:
-            fig_3d = go.Figure(data=[go.Scatter3d(x=phys_df['timestamp'], y=phys_df['velocity'], z=phys_df['acceleration'], mode='lines+markers', marker=dict(size=abs(phys_df['jerk']) * 5 + 2, color=phys_df['jerk'], colorscale='Turbo'))])
-            fig_3d.update_layout(scene=dict(xaxis_title='Time', yaxis_title='Vel', zaxis_title='Accel'), height=600, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig_3d, use_container_width=True)
+        st.info("Dimensions: **X**=Time, **Y**=Velocity (Return), **Z**=Acceleration. **Color/Size** = JERK (Market Shock).")
 
-        # --- SECTION 6: MONTE CARLO ---
+        if not phys_df.empty:
+            fig_3d = go.Figure(data=[go.Scatter3d(
+                x=phys_df['timestamp'],
+                y=phys_df['velocity'],      
+                z=phys_df['acceleration'],  
+                mode='lines+markers',
+                marker=dict(
+                    size=abs(phys_df['jerk']) * 5 + 2, 
+                    color=phys_df['jerk'],             
+                    colorscale='Turbo',
+                    opacity=0.8,
+                    colorbar=dict(title="Jerk")
+                ),
+                line=dict(color='rgba(255, 255, 255, 0.3)', width=2),
+                hovertemplate = '<b>Date</b>: %{x|%Y-%m-%d}<br><b>Vel</b>: %{y:.2f}%<br><b>Acc</b>: %{z:.2f}%<br><b>Jerk</b>: %{marker.color:.2f}<extra></extra>'
+            )])
+
+            fig_3d.update_layout(
+                scene=dict(
+                    xaxis_title='Time',
+                    yaxis_title='Velocity',
+                    zaxis_title='Accel',
+                    xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                    yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                    zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True),
+                ),
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc"),
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=600 
+            )
+            st.plotly_chart(fig_3d, use_container_width=True)
+        else:
+            st.info("Not enough data points for Physics analysis.")
+
+        # --- SECTION 5: PROBABILISTIC FORECASTING (MONTE CARLO) ---
         st.divider()
-        st.markdown("### 🎲 Monte Carlo Forward Simulation (1-Year Probability Cone)")
+        
+        st.markdown(f"### 🎲 Monte Carlo Forward Simulation (1-Year Probability Cone)")
+        st.caption("Runs 100 randomized future market paths based on the bot's historical mean return and volatility.")
+        
+        # We need numpy for the simulations
         import numpy as np 
+        
         if not df_clean.empty and len(df_clean) > 5:
-            m_ret = manual_cagr / 252 if use_manual_cagr else df_clean['daily_return'].mean()
-            s_ret = df_clean['daily_return'].std()
-            np.random.seed(42)
-            sim_paths = current_equity_raw * np.cumprod(1 + np.random.normal(m_ret, s_ret, (252, 100)), axis=0)
-            mc_df = pd.DataFrame(sim_paths)
-            f_dates = [df_clean['timestamp'].iloc[-1] + pd.Timedelta(days=i) for i in range(1, 253)]
+            mean_ret = df_clean['daily_return'].mean()
+            std_ret = df_clean['daily_return'].std()
+            
+            # Override with manual inputs if the toggle is checked in the sidebar
+            if use_manual_cagr:
+                mean_ret = manual_cagr / 252 # Convert annual to daily
+                st.warning(f"Running simulation with forced manual input (CAGR: {manual_cagr*100:.1f}%)")
+            
+            days_to_sim = 252 # 1 Trading Year
+            sims = 100
+            np.random.seed(42) # Seed to prevent violent flashing on every refresh
+            
+            # Generate random normal returns
+            random_returns = np.random.normal(mean_ret, std_ret, (days_to_sim, sims))
+            
+            # Calculate cumulative price paths
+            price_paths = current_equity_raw * np.cumprod(1 + random_returns, axis=0)
+            mc_df = pd.DataFrame(price_paths)
+            
+            # Extract Quantiles (5th, 50th, 95th Percentiles)
+            p5 = mc_df.quantile(0.05, axis=1)
+            p50 = mc_df.quantile(0.50, axis=1)
+            p95 = mc_df.quantile(0.95, axis=1)
+            
+            # Create Future Dates
+            last_date = df_clean['timestamp'].iloc[-1]
+            future_dates = [last_date + pd.Timedelta(days=i) for i in range(1, days_to_sim + 1)]
+            
             fig_mc = go.Figure()
-            fig_mc.add_trace(go.Scatter(x=f_dates, y=mc_df.quantile(0.95, axis=1), mode='lines', line=dict(color='#00ff41', dash='dash'), name='Bull'))
-            fig_mc.add_trace(go.Scatter(x=f_dates, y=mc_df.quantile(0.05, axis=1), mode='lines', line=dict(color='#ff4b4b', dash='dash'), fill='tonexty', name='Bear'))
-            fig_mc.add_trace(go.Scatter(x=f_dates, y=mc_df.quantile(0.50, axis=1), mode='lines', line=dict(color='#569cd6', width=3), name='Median'))
-            fig_mc.update_layout(height=400, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            
+            # Add Top Boundary (95th Percentile)
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p95, mode='lines', line=dict(color='#00ff41', width=1, dash='dash'), name='95th Pctl (Bull Case)'))
+            
+            # Add Bottom Boundary (5th Percentile) and fill area between
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p5, mode='lines', line=dict(color='#ff4b4b', width=1, dash='dash'), fill='tonexty', fillcolor='rgba(255, 255, 255, 0.05)', name='5th Pctl (Bear Case)'))
+            
+            # Add Median Path
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p50, mode='lines', line=dict(color='#569cd6', width=3), name='Median Expected'))
+            
+            fig_mc.update_layout(
+                height=400, margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc"),
+                yaxis_title="Projected Equity ($)", xaxis_title=None,
+                legend=dict(orientation="h", y=1.1, x=0)
+            )
             
             c_mc1, c_mc2 = st.columns([3, 1])
-            with c_mc1: st.plotly_chart(fig_mc, use_container_width=True)
+            with c_mc1:
+                st.plotly_chart(fig_mc, use_container_width=True)
             with c_mc2:
-                st.metric("Expected (1yr)", f"${mc_df.quantile(0.5, axis=1).iloc[-1]:,.0f}")
-                st.metric("Bull (Top 5%)", f"${mc_df.quantile(0.95, axis=1).iloc[-1]:,.0f}")
-                st.metric("Bear (Bot 5%)", f"${mc_df.quantile(0.05, axis=1).iloc[-1]:,.0f}", delta_color="inverse")
+                # Calculate ending values
+                val_med = p50.iloc[-1]
+                val_bull = p95.iloc[-1]
+                val_bear = p5.iloc[-1]
+                
+                st.metric("Expected Value (1 Yr)", f"${val_med:,.2f}", f"{((val_med/current_equity_raw)-1)*100:.1f}%")
+                st.metric("Bull Case (Top 5%)", f"${val_bull:,.2f}", f"+{((val_bull/current_equity_raw)-1)*100:.1f}%")
+                st.metric("Bear Case (Bottom 5%)", f"${val_bear:,.2f}", f"{((val_bear/current_equity_raw)-1)*100:.1f}%", delta_color="inverse")
+                
         else:
-            st.info("Awaiting more historical data for simulations.")
-
+            st.info("Awaiting enough historical data to generate Monte Carlo simulations.")
+        
+        st.markdown(f"### 🔮 Future Projections (Based on {proj_label} CAGR: {projection_rate:.1%})")
+        
+        if not proj_df.empty:
+            c_p1, c_p2 = st.columns([2, 1])
+            with c_p1:
+                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline',
+                                   color_discrete_map={"Next 12 Months": "#569cd6", "10-Year Vision": "#c586c0"})
+                fig_proj.update_traces(line_width=3)
+                fig_proj.update_layout(
+                    margin=dict(l=0, r=0, t=30, b=0), 
+                    xaxis_title=None, 
+                    yaxis_title=None, 
+                    height=400, 
+                    template="plotly_dark",
+                    legend=dict(orientation="h", y=1.1, x=0),
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)'
+                )
+                st.plotly_chart(fig_proj, use_container_width=True)
+            with c_p2:
+                # Highlight the end goal
+                final_val = proj_df['Projected Value'].iloc[-1]
+                st.metric("10-Year Target", f"${final_val:,.2f}", f"{projection_rate:.1%} Rate")
+                
+                st.dataframe(
+                    proj_df, 
+                    width="stretch", 
+                    hide_index=True,
+                    column_config={
+                        "Date": st.column_config.DatetimeColumn(format="MMM YYYY"),
+                        "Projected Value": st.column_config.NumberColumn(format="$%.2f")
+                    },
+                    height=300
+                )
     else:
         st.write("No history data available yet.")
 
