@@ -1004,21 +1004,12 @@ with tab3:
             )
             st.plotly_chart(fig_eq, use_container_width=True)
 
-        with col_perf2:
-            # --- ADDED: UNDERWATER DURATION CALCULATION ---
-            max_eq_idx = hist_df_raw['equity'].idxmax()
-            last_timestamp = hist_df_raw['timestamp'].iloc[-1]
-            days_underwater = (last_timestamp - hist_df_raw['timestamp'].loc[max_eq_idx]).days
-            uw_text = f" ({days_underwater} Days in Drawdown)" if days_underwater > 0 else " (At All-Time High 🚀)"
-            
-            st.markdown(f"### 📉 Real Risk{uw_text}")
-            
+    with col_perf2:
+            st.markdown("### 📉 Real Risk (Drawdown)")
+            # Using RAW DF (Drawdowns will look smaller relative to new higher peaks)
             fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
-            
-            # Add vertical line showing the peak
-            fig_dd.add_vline(x=hist_df_raw['timestamp'].loc[max_eq_idx], line_dash="dot", line_color="#cccccc", annotation_text="Peak")
             st.plotly_chart(fig_dd, use_container_width=True)
 
         # --- ADDED: QUANTITATIVE RISK ANALYTICS ---
@@ -1036,19 +1027,11 @@ with tab3:
         skewness = df_clean['daily_return'].skew()
         kurtosis = df_clean['daily_return'].kurtosis()
         
-        # --- ADDED: THE KELLY CRITERION ---
-        win_rate_val = metrics.get("Win Rate (Daily)", 0.0)
-        # Kelly Formula = W - [(1 - W) / R]
-        kelly_pct = win_rate_val - ((1 - win_rate_val) / payoff_ratio) if payoff_ratio > 0 else 0
-        # Half-Kelly is standard institutional practice to reduce volatility
-        half_kelly = max(0, kelly_pct / 2)
-        
-        cq1, cq2, cq3, cq4, cq5 = st.columns(5) # Expand to 5 columns
+        cq1, cq2, cq3, cq4 = st.columns(4)
         cq1.metric("Avg Up-Day", f"{avg_win*100:.2f}%")
         cq2.metric("Avg Down-Day", f"-{avg_loss*100:.2f}%")
         cq3.metric("Payoff Ratio", f"{payoff_ratio:.2f}", delta="Optimal > 1.5" if payoff_ratio > 1.5 else "Sub-Optimal", delta_color="normal" if payoff_ratio > 1.5 else "inverse")
-        cq4.metric("Kurtosis", f"{kurtosis:.2f}", delta="Fat Tails" if kurtosis > 3 else "Normal", delta_color="inverse" if kurtosis > 3 else "normal")
-        cq5.metric("Half-Kelly Sizing", f"{half_kelly*100:.1f}%", delta="Suggested Trade Risk", delta_color="off")
+        cq4.metric("Kurtosis (Fat Tails)", f"{kurtosis:.2f}", delta="High Tail Risk" if kurtosis > 3 else "Normal Risk", delta_color="inverse" if kurtosis > 3 else "normal")
 
         # 2. Charts: Distribution & Rolling Volatility
         col_q1, col_q2 = st.columns(2)
