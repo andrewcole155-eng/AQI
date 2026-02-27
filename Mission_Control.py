@@ -592,7 +592,7 @@ with tab1:
 
     st.divider()
 
-# --- 2. NEURAL CONVICTION RADAR ---
+    # --- 2. NEURAL CONVICTION RADAR ---
     st.subheader("🧠 Neural Conviction Levels")
     if conviction_data:
         # Convert nested dictionary to flat DataFrame
@@ -822,58 +822,15 @@ with tab1:
             st.caption("No recent orders found.")
 
 with tab2:
-    st.markdown("### 📜 System Diagnostics & Terminal")
+    st.markdown("### Terminal Output (Last 50 Lines)")
     
     if logs:
-        # --- 1. HEALTH METRICS ---
-        log_text = "\n".join(logs)
-        err_count = log_text.count("[ERROR]") + log_text.count("[CRITICAL]")
-        warn_count = log_text.count("[WARNING]")
-        
-        c_diag1, c_diag2, c_diag3 = st.columns(3)
-        c_diag1.metric("🔍 Total Log Lines Buffered", len(logs))
-        
-        # Color-coded deltas to draw attention if things go wrong
-        c_diag2.metric("🟡 Warnings (Recent)", warn_count, delta="Review" if warn_count > 0 else "Clear", delta_color="off" if warn_count > 0 else "normal")
-        c_diag3.metric("🔴 Errors (Recent)", err_count, delta="Urgent" if err_count > 0 else "Clear", delta_color="inverse" if err_count > 0 else "normal")
-        
-        st.divider()
-        
-        # --- 2. INTERACTIVE CONTROLS ---
-        col_ctrl1, col_ctrl2 = st.columns([3, 1])
-        with col_ctrl1:
-            search_term = st.text_input("🔍 Search Logs (e.g., 'IONQ', 'Margin', 'Exception')", "")
-        with col_ctrl2:
-            log_level = st.selectbox("🚦 Filter Level", ["ALL", "ERROR", "WARNING", "INFO"])
-        
-        # --- FILTERING LOGIC ---
-        filtered_logs = logs.copy()
-        
-        if log_level != "ALL":
-            filtered_logs = [line for line in filtered_logs if f"[{log_level}]" in line]
-            
-        if search_term:
-            filtered_logs = [line for line in filtered_logs if search_term.lower() in line.lower()]
-        
-        # --- 3. TERMINAL RENDER ---
-        if filtered_logs:
-            # We don't slice [-50:] anymore because the user might be filtering for a specific 
-            # error that happened 60 lines ago. We show everything that matches the filter.
-            formatted_logs = [format_log_line(line) for line in filtered_logs]
-            log_html = "".join(formatted_logs)
-            st.markdown(f'<div class="terminal-box">{log_html}</div>', unsafe_allow_html=True)
-        else:
-            st.warning("No logs match your current search/filter criteria.")
-            
-        # --- 4. EXPORT BUTTON ---
-        st.download_button(
-            label="📥 Download Filtered Logs (.txt)",
-            data="\n".join(filtered_logs),
-            file_name=f"angel_logs_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.txt",
-            mime="text/plain"
-        )
+        recent_logs = logs[-50:] 
+        formatted_logs = [format_log_line(line) for line in recent_logs]
+        log_html = "".join(formatted_logs)
+        st.markdown(f'<div class="terminal-box">{log_html}</div>', unsafe_allow_html=True)
     else:
-        st.info("No logs retrieved from the server.")
+        st.write("No logs found.")
 
 with tab3:
     # 1. Get History
@@ -1004,65 +961,13 @@ with tab3:
             )
             st.plotly_chart(fig_eq, use_container_width=True)
 
-    with col_perf2:
+        with col_perf2:
             st.markdown("### 📉 Real Risk (Drawdown)")
             # Using RAW DF (Drawdowns will look smaller relative to new higher peaks)
             fig_dd = px.area(dd_df, x='timestamp', y='drawdown')
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
-
-        # --- ADDED: QUANTITATIVE RISK ANALYTICS ---
-        st.divider()
-        st.subheader("🔬 Quantitative Risk Analytics")
-        
-        # Ensure daily returns exist for math
-        hist_df_raw['daily_return'] = hist_df_raw['equity'].pct_change()
-        df_clean = hist_df_raw.dropna(subset=['daily_return'])
-        
-        # 1. Math out Expectancy & Skew
-        avg_win = df_clean[df_clean['daily_return'] > 0]['daily_return'].mean()
-        avg_loss = abs(df_clean[df_clean['daily_return'] < 0]['daily_return'].mean())
-        payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
-        skewness = df_clean['daily_return'].skew()
-        kurtosis = df_clean['daily_return'].kurtosis()
-        
-        cq1, cq2, cq3, cq4 = st.columns(4)
-        cq1.metric("Avg Up-Day", f"{avg_win*100:.2f}%")
-        cq2.metric("Avg Down-Day", f"-{avg_loss*100:.2f}%")
-        cq3.metric("Payoff Ratio", f"{payoff_ratio:.2f}", delta="Optimal > 1.5" if payoff_ratio > 1.5 else "Sub-Optimal", delta_color="normal" if payoff_ratio > 1.5 else "inverse")
-        cq4.metric("Kurtosis (Fat Tails)", f"{kurtosis:.2f}", delta="High Tail Risk" if kurtosis > 3 else "Normal Risk", delta_color="inverse" if kurtosis > 3 else "normal")
-
-        # 2. Charts: Distribution & Rolling Volatility
-        col_q1, col_q2 = st.columns(2)
-        
-        with col_q1:
-            st.markdown("**📊 Return Distribution**")
-            fig_dist = px.histogram(
-                df_clean, x='daily_return', nbins=50, 
-                marginal='box', color_discrete_sequence=['#569cd6']
-            )
-            fig_dist.add_vline(x=0, line_dash="dash", line_color="#ff4b4b")
-            fig_dist.update_layout(
-                height=280, margin=dict(l=0, r=0, t=10, b=0),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                xaxis_tickformat='.1%', font=dict(color="#cccccc"),
-                xaxis_title="Daily Return %", yaxis_title="Frequency"
-            )
-            st.plotly_chart(fig_dist, use_container_width=True)
-
-        with col_q2:
-            st.markdown("**🌪️ 21-Day Rolling Volatility (Annualized)**")
-            hist_df_raw['rolling_vol'] = hist_df_raw['daily_return'].rolling(21).std() * (252**0.5) * 100
-            fig_vol = px.line(hist_df_raw, x='timestamp', y='rolling_vol')
-            fig_vol.update_traces(line_color='#ffb000')
-            fig_vol.update_layout(
-                height=280, margin=dict(l=0, r=0, t=10, b=0),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                yaxis_ticksuffix="%", xaxis_title=None, yaxis_title="Volatility %",
-                font=dict(color="#cccccc")
-            )
-            st.plotly_chart(fig_vol, use_container_width=True)
 
         # --- SECTION 3: TIME INTELLIGENCE ---
         st.divider()
