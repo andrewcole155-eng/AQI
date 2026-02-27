@@ -1214,7 +1214,7 @@ with tab3:
         # --- SECTION 5: PROBABILISTIC FORECASTING (MONTE CARLO) ---
         st.divider()
         
-        st.markdown(f"### 🎲 Monte Carlo Forward Simulation (1-Year Probability Cone)")
+        st.markdown("### 🎲 Monte Carlo Forward Simulation (1-Year Probability Cone)")
         st.caption("Runs 100 randomized future market paths based on the bot's historical mean return and volatility.")
         
         # We need numpy for the simulations
@@ -1283,41 +1283,7 @@ with tab3:
                 
         else:
             st.info("Awaiting enough historical data to generate Monte Carlo simulations.")
-        
-        st.markdown(f"### 🔮 Future Projections (Based on {proj_label} CAGR: {projection_rate:.1%})")
-        
-        if not proj_df.empty:
-            c_p1, c_p2 = st.columns([2, 1])
-            with c_p1:
-                fig_proj = px.line(proj_df, x='Date', y='Projected Value', markers=True, color='Timeline',
-                                   color_discrete_map={"Next 12 Months": "#569cd6", "10-Year Vision": "#c586c0"})
-                fig_proj.update_traces(line_width=3)
-                fig_proj.update_layout(
-                    margin=dict(l=0, r=0, t=30, b=0), 
-                    xaxis_title=None, 
-                    yaxis_title=None, 
-                    height=400, 
-                    template="plotly_dark",
-                    legend=dict(orientation="h", y=1.1, x=0),
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)'
-                )
-                st.plotly_chart(fig_proj, use_container_width=True)
-            with c_p2:
-                # Highlight the end goal
-                final_val = proj_df['Projected Value'].iloc[-1]
-                st.metric("10-Year Target", f"${final_val:,.2f}", f"{projection_rate:.1%} Rate")
-                
-                st.dataframe(
-                    proj_df, 
-                    width="stretch", 
-                    hide_index=True,
-                    column_config={
-                        "Date": st.column_config.DatetimeColumn(format="MMM YYYY"),
-                        "Projected Value": st.column_config.NumberColumn(format="$%.2f")
-                    },
-                    height=300
-                )
+
     else:
         st.write("No history data available yet.")
 
