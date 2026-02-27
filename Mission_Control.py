@@ -448,9 +448,33 @@ with st.sidebar:
     
     st.divider()
     st.subheader("🔮 Projection Tuning")
-    # Allows you to override the CAGR for projections
-    use_manual_cagr = st.checkbox("Manual CAGR Override")
-    manual_cagr = st.slider("Target CAGR %", 0, 100, 25) / 100
+    
+    # --- PERFORMANCE VS SIMULATION BRIDGE ---
+    hist_df_raw_side = get_portfolio_history(api)
+    if not hist_df_raw_side.empty and account:
+        current_eq_side = float(account['equity'])
+        # Use a localized adjusted copy just for the sidebar metric
+        hist_df_adj_side = hist_df_raw_side.copy()
+        # Apply latest deposit for accurate CAGR calculation in sidebar
+        ts_last = pd.Timestamp("2026-02-26", tz='UTC')
+        mask_last = hist_df_adj_side['timestamp'] >= ts_last
+        hist_df_adj_side.loc[mask_last, 'equity'] -= 69.71
+        
+        metrics_side = calculate_advanced_metrics(hist_df_adj_side)
+        actual_cagr = metrics_side.get("CAGR", 0.0)
+        
+        st.metric("Actual CAGR", f"{actual_cagr:.1%}")
+        
+        use_manual_cagr = st.checkbox("Manual CAGR Override")
+        # Default slider to current performance for a realistic starting point
+        manual_cagr = st.slider("Target Simulation CAGR %", 0, 200, int(actual_cagr*100) if actual_cagr > 0 else 25) / 100
+        
+        if use_manual_cagr:
+            drift = manual_cagr - actual_cagr
+            st.caption(f"Simulation Drift: {drift:+.1%} vs Reality")
+    else:
+        use_manual_cagr = False
+        manual_cagr = 0.25
     
     if st.button("Force Refresh Now", type="primary"):
         st.cache_data.clear() 
@@ -1069,9 +1093,28 @@ with tab3:
             c_mc1, c_mc2 = st.columns([3, 1])
             with c_mc1: st.plotly_chart(fig_mc, use_container_width=True)
             with c_mc2:
-                st.metric("Expected (1yr)", f"${mc_df.quantile(0.5, axis=1).iloc[-1]:,.0f}")
-                st.metric("Bull (Top 5%)", f"${mc_df.quantile(0.95, axis=1).iloc[-1]:,.0f}")
-                st.metric("Bear (Bot 5%)", f"${mc_df.quantile(0.05, axis=1).iloc[-1]:,.0f}", delta_color="inverse")
+                # Calculate ending values
+                val_med = p50.iloc[-1]
+                val_bull = p95.iloc[-1]
+                val_bear = p5.iloc[-1]
+                
+                # --- ADDED: PROBABILITY OF PROFIT (PoP) ---
+                # Calculate how many paths ended above current equity
+                final_prices = mc_df.iloc[-1]
+                profitable_paths = (final_prices > current_equity_raw).sum()
+                pop_pct = (profitable_paths / sims) * 100
+                
+                # Show the CAGR used for this specific simulation
+                sim_cagr = manual_cagr if use_manual_cagr else valid_cagr
+                st.metric("Simulation CAGR", f"{sim_cagr:.1%}", delta="Manual" if use_manual_cagr else "Historical")
+                
+                st.metric("Prob. of Profit (1yr)", f"{pop_pct:.0f}%", 
+                          help="Percentage of simulated paths that ended higher than current equity.")
+                
+                st.divider()
+                st.metric("Expected Value", f"${val_med:,.2f}", f"{((val_med/current_equity_raw)-1)*100:.1f}%")
+                st.metric("Bull Case (Top 5%)", f"${val_bull:,.2f}")
+                st.metric("Bear Case (Bot 5%)", f"${val_bear:,.2f}", delta_color="inverse")
         else:
             st.info("Awaiting more historical data for simulations.")
 
