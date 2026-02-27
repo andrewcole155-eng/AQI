@@ -441,21 +441,27 @@ def format_log_line(line):
 
     return f'<div class="log-line">{clean_line}</div>'
 
+# === DASHBOARD LOGIC INITIALIZATION ===
+api = init_alpaca() 
+if not api: st.stop()
+
+# Load Primary Data
+account, positions, orders = get_account_data(api)
+hist_df_raw = get_portfolio_history(api)
+
 # === SIDEBAR CONFIG ===
 with st.sidebar:
     st.header("🦅 Angel Control")
     auto_refresh = st.toggle("Enable Auto-Refresh (60s)", value=True)
     
     st.divider()
-    st.subheader("🔮 Projection Tuning")
     
-    # --- PERFORMANCE VS SIMULATION BRIDGE ---
-    hist_df_raw_side = get_portfolio_history(api)
-    if not hist_df_raw_side.empty and account:
-        current_eq_side = float(account['equity'])
-        # Use a localized adjusted copy just for the sidebar metric
-        hist_df_adj_side = hist_df_raw_side.copy()
-        # Apply latest deposit for accurate CAGR calculation in sidebar
+    if not hist_df_raw.empty and account:
+        st.subheader("🔮 Projection Tuning")
+        
+        # Performance baseline for sidebar
+        hist_df_adj_side = hist_df_raw.copy()
+        # Apply latest deposit for sidebar accuracy (honesty check)
         ts_last = pd.Timestamp("2026-02-26", tz='UTC')
         mask_last = hist_df_adj_side['timestamp'] >= ts_last
         hist_df_adj_side.loc[mask_last, 'equity'] -= 69.71
@@ -466,7 +472,6 @@ with st.sidebar:
         st.metric("Actual CAGR", f"{actual_cagr:.1%}")
         
         use_manual_cagr = st.checkbox("Manual CAGR Override")
-        # Default slider to current performance for a realistic starting point
         manual_cagr = st.slider("Target Simulation CAGR %", 0, 200, int(actual_cagr*100) if actual_cagr > 0 else 25) / 100
         
         if use_manual_cagr:
@@ -476,69 +481,46 @@ with st.sidebar:
         use_manual_cagr = False
         manual_cagr = 0.25
     
+    st.divider()
     if st.button("Force Refresh Now", type="primary"):
         st.cache_data.clear() 
         st.rerun()
 
-# === DASHBOARD LOGIC ===
-api = init_alpaca()
-if not api: st.stop()
-
-# 1. ACCOUNT OVERVIEW
-account, positions, orders = get_account_data(api)
-
+# === MAIN DASHBOARD BODY ===
 if account:
-    col1, col2, col3, col_var, col4 = st.columns(5) # Added a 5th column
-    
     equity = float(account['equity'])
     last_equity = float(account['last_equity'])
-    buying_power = float(account['buying_power'])
+    
+    col1, col2, col3, col_var, col4 = st.columns(5)
     
     daily_pl_pct = (equity - last_equity) / last_equity * 100
     daily_pl_abs = equity - last_equity
     
-    # --- ADDED: VALUE AT RISK CALCULATION ---
-    # Assuming standard 3% SL across the board based on your bot config
+    # Value at Risk (3% SL assumption)
     total_var = sum([abs(float(p['market_value'])) * 0.03 for p in positions]) if positions else 0.0
     var_pct = (total_var / equity) * 100 if equity > 0 else 0.0
     
     col1.metric("Net Liquidity", f"${equity:,.2f}", f"{daily_pl_pct:.2f}%")
     col2.metric("Day P/L", f"${daily_pl_abs:,.2f}")
-    col3.metric("Buying Power", f"${buying_power:,.2f}")
+    col3.metric("Buying Power", f"${float(account['buying_power']):,.2f}")
     col_var.metric("Open Risk (VaR)", f"${total_var:,.2f}", f"-{var_pct:.2f}% Eq", delta_color="inverse")
     
     # Process Logs
     logs = read_bot_logs()
     last_run_str, last_run_dt, parsed_signals, watchlist_data, conviction_data = parse_latest_run_logic(logs)
 
-    # Calculate "Time Since Last Run"
-    status_label = "Bot Status"
+    # Bot Heartbeat
     status_val = "Unknown"
-
     if last_run_dt:
-        # Streamlit server time vs Log time safety alignment
         diff = datetime.now() - last_run_dt 
         seconds_ago = int(diff.total_seconds())
-        minutes_ago = int(seconds_ago / 60)
-        
-        if minutes_ago < 10:
-            status_val = "🟢 Active"
-        elif minutes_ago < 60:
-            status_val = f"🟡 Idle ({minutes_ago}m)"
-        else:
-            status_val = f"🔴 Stale ({int(minutes_ago/60)}h)"
+        status_val = "🟢 Active" if (seconds_ago / 60) < 10 else "🔴 Stale"
     
-    col4.metric(status_label, status_val, delta=f"Last Log: {last_run_str}", delta_color="off")
+    col4.metric("Bot Status", status_val, delta=f"Last Log: {last_run_str}", delta_color="off")
     
-    # --- ADDED: BOT HEARTBEAT COUNTDOWN ---
     if status_val == "🟢 Active" and seconds_ago < 300:
-        safe_seconds_ago = max(0, seconds_ago) 
-        seconds_left = max(0, 300 - safe_seconds_ago)
-        
-        # FIX: Convert to strict integer 0-100 to prevent Streamlit float exceptions
-        progress_val = int(max(0, min(100, (safe_seconds_ago / 300.0) * 100)))
-        
-        st.progress(progress_val, text=f"⏳ Next Market Scan in ~{seconds_left}s")
+        progress_val = int(max(0, min(100, (seconds_ago / 300.0) * 100)))
+        st.progress(progress_val, text=f"⏳ Next Market Scan in ~{int(300-seconds_ago)}s")
 
 st.divider()
 
@@ -1077,46 +1059,54 @@ with tab3:
         st.divider()
         st.markdown("### 🎲 Monte Carlo Forward Simulation (1-Year Probability Cone)")
         import numpy as np 
+        
         if not df_clean.empty and len(df_clean) > 5:
+            # Determine daily return to simulate
             m_ret = manual_cagr / 252 if use_manual_cagr else df_clean['daily_return'].mean()
             s_ret = df_clean['daily_return'].std()
-            np.random.seed(42)
-            sim_paths = current_equity_raw * np.cumprod(1 + np.random.normal(m_ret, s_ret, (252, 100)), axis=0)
+            
+            np.random.seed(42) # Consistent results
+            sims = 100
+            days = 252
+            
+            # Run Simulation
+            random_returns = np.random.normal(m_ret, s_ret, (days, sims))
+            sim_paths = equity * np.cumprod(1 + random_returns, axis=0)
             mc_df = pd.DataFrame(sim_paths)
-            f_dates = [df_clean['timestamp'].iloc[-1] + pd.Timedelta(days=i) for i in range(1, 253)]
+            
+            # Future Dates for X-Axis
+            f_dates = [df_clean['timestamp'].iloc[-1] + pd.Timedelta(days=i) for i in range(1, days + 1)]
+            
+            # Percentiles for the cone
+            p95 = mc_df.quantile(0.95, axis=1)
+            p50 = mc_df.quantile(0.50, axis=1)
+            p5 = mc_df.quantile(0.05, axis=1)
+            
             fig_mc = go.Figure()
-            fig_mc.add_trace(go.Scatter(x=f_dates, y=mc_df.quantile(0.95, axis=1), mode='lines', line=dict(color='#00ff41', dash='dash'), name='Bull'))
-            fig_mc.add_trace(go.Scatter(x=f_dates, y=mc_df.quantile(0.05, axis=1), mode='lines', line=dict(color='#ff4b4b', dash='dash'), fill='tonexty', name='Bear'))
-            fig_mc.add_trace(go.Scatter(x=f_dates, y=mc_df.quantile(0.50, axis=1), mode='lines', line=dict(color='#569cd6', width=3), name='Median'))
-            fig_mc.update_layout(height=400, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            fig_mc.add_trace(go.Scatter(x=f_dates, y=p95, mode='lines', line=dict(color='#00ff41', dash='dash'), name='Bull (95th)'))
+            fig_mc.add_trace(go.Scatter(x=f_dates, y=p5, mode='lines', line=dict(color='#ff4b4b', dash='dash'), fill='tonexty', name='Bear (5th)'))
+            fig_mc.add_trace(go.Scatter(x=f_dates, y=p50, mode='lines', line=dict(color='#569cd6', width=3), name='Median Expected'))
+            
+            fig_mc.update_layout(height=400, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': '#cccccc'})
             
             c_mc1, c_mc2 = st.columns([3, 1])
-            with c_mc1: st.plotly_chart(fig_mc, use_container_width=True)
+            with c_mc1:
+                st.plotly_chart(fig_mc, use_container_width=True)
             with c_mc2:
-                # Calculate ending values
+                # Stats calculation
                 val_med = p50.iloc[-1]
-                val_bull = p95.iloc[-1]
-                val_bear = p5.iloc[-1]
-                
-                # --- ADDED: PROBABILITY OF PROFIT (PoP) ---
-                # Calculate how many paths ended above current equity
-                final_prices = mc_df.iloc[-1]
-                profitable_paths = (final_prices > current_equity_raw).sum()
+                profitable_paths = (mc_df.iloc[-1] > equity).sum()
                 pop_pct = (profitable_paths / sims) * 100
                 
-                # Show the CAGR used for this specific simulation
-                sim_cagr = manual_cagr if use_manual_cagr else valid_cagr
-                st.metric("Simulation CAGR", f"{sim_cagr:.1%}", delta="Manual" if use_manual_cagr else "Historical")
-                
-                st.metric("Prob. of Profit (1yr)", f"{pop_pct:.0f}%", 
-                          help="Percentage of simulated paths that ended higher than current equity.")
+                sim_cagr_display = manual_cagr if use_manual_cagr else actual_cagr
+                st.metric("Simulation CAGR", f"{sim_cagr_display:.1%}", delta="Manual" if use_manual_cagr else "Historical")
+                st.metric("Prob. of Profit", f"{pop_pct:.0f}%", help="Paths ending above current equity")
                 
                 st.divider()
-                st.metric("Expected Value", f"${val_med:,.2f}", f"{((val_med/current_equity_raw)-1)*100:.1f}%")
-                st.metric("Bull Case (Top 5%)", f"${val_bull:,.2f}")
-                st.metric("Bear Case (Bot 5%)", f"${val_bear:,.2f}", delta_color="inverse")
+                st.metric("Expected Value", f"${val_med:,.0f}", f"{((val_med/equity)-1)*100:.1f}%")
+                st.metric("Bear Case (5%)", f"${p5.iloc[-1]:,.0f}", delta_color="inverse")
         else:
-            st.info("Awaiting more historical data for simulations.")
+            st.info("Awaiting more historical data for simulations (Need > 5 days).")
 
     else:
         st.write("No history data available yet.")
