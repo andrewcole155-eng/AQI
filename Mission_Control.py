@@ -1019,15 +1019,25 @@ with tab3:
             
             # --- FIX: Safely extract and convert the peak timestamp to a string ---
             peak_timestamp = hist_df_raw['timestamp'].loc[max_eq_idx]
-            # If there are duplicate max indexes, grab the first one safely
             if isinstance(peak_timestamp, pd.Series):
                 peak_timestamp = peak_timestamp.iloc[0]
             
-            # Convert to string to bypass Plotly's mathematical midpoint calculation bug
             peak_str = peak_timestamp.strftime('%Y-%m-%d %H:%M:%S')
             
-            # Add vertical line showing the peak
-            fig_dd.add_vline(x=peak_str, line_dash="dot", line_color="#cccccc", annotation_text="Peak")
+            # 1. Draw the vertical line WITHOUT the built-in annotation
+            fig_dd.add_vline(x=peak_str, line_dash="dot", line_color="#cccccc")
+            
+            # 2. Add the text manually to bypass Plotly's broken math
+            fig_dd.add_annotation(
+                x=peak_str, 
+                y=1.0,           # Pin to the very top of the chart
+                yref="paper",    # Use relative positioning for the Y-axis
+                text="Peak", 
+                showarrow=False,
+                font=dict(color="#cccccc", size=12),
+                yshift=10        # Nudge it slightly above the grid
+            )
+            
             st.plotly_chart(fig_dd, use_container_width=True)
 
         # --- ADDED: QUANTITATIVE RISK ANALYTICS ---
