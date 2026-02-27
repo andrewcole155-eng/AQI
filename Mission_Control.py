@@ -129,7 +129,7 @@ def parse_latest_run_logic(logs):
     Parses logs to extract:
     1. Signals (Decisions)
     2. Watchlist (High potential)
-    3. Neural Conviction (Latest confidence score for ALL real tickers)
+    3. Neural Conviction (Latest confidence score and Action)
     """
     signals = {}
     watchlist = [] 
@@ -138,41 +138,37 @@ def parse_latest_run_logic(logs):
     last_run_str = "Unknown"
     
     ts_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})')
-    # Extracts the number from "Conf: 48.04%"
     conf_pattern = re.compile(r'Conf:\s*([\d\.]+)%?')
     
-    # Define tags to explicitly ignore so they don't show up as Tickers
     ignore_tags = {'INFO', 'WARNING', 'ERROR', 'CRITICAL', 'DEBUG'}
+    action_map = {"0": "HOLD", "1": "LONG", "2": "SHORT", "3": "CLOSE"}
     
-    # Iterate reversed to get the LATEST log entry for each ticker first
     for line in reversed(logs):
-        # 1. Extract all uppercase text inside brackets
         all_tags = re.findall(r'\[([A-Z]+)\]', line)
-        
-        # 2. Filter out system tags
         valid_tickers = [tag for tag in all_tags if tag not in ignore_tags]
         
-        # 3. Process only if a real ticker exists in the line
         if valid_tickers:
-            ticker = valid_tickers[-1] # Grab the actual ticker
+            ticker = valid_tickers[-1] 
             
-            # Extract confidence (e.g., 48.04)
             conf_match = conf_pattern.search(line)
             confidence = float(conf_match.group(1)) if conf_match else 0.0
             
-            # Populate Neural Conviction once per ticker (already a 0-100 scale)
+            # --- NEW: Extract the Action State (0, 1, 2, 3) ---
+            action_match = re.search(r'(?:PROPOSAL|SIGNAL):\s*(\d)', line)
+            action_str = action_map.get(action_match.group(1), "") if action_match else ""
+            
+            # Store Confidence AND Action for the Chart
             if ticker not in neural_conviction and confidence > 0:
-                neural_conviction[ticker] = confidence
+                neural_conviction[ticker] = {"Confidence": confidence, "Action": action_str}
 
-            # Signal Logic
             if ticker not in signals:
                 clean_msg = line.split(f"[{ticker}]")[-1].strip()
                 if "FINAL SIGNAL" in line:
                     signals[ticker] = "✅ " + clean_msg
                 elif "Forcing HOLD" in line or "Margin" in line:
                     signals[ticker] = "⏸️ " + clean_msg
+                    # FIXED: 20.0 threshold and .1f formatting
                     if confidence > 20.0: 
-                        # --- ADDED: SMART WATCHLIST TAGGING ---
                         tag = "🔥 Screaming Setup" if confidence > 80.0 else ("⚡ High Conviction" if confidence > 50.0 else "👀 Watching")
                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": tag})
                 elif "Prediction" in line:
@@ -184,7 +180,6 @@ def parse_latest_run_logic(logs):
                          tag = "🔥 Screaming Setup" if confidence > 80.0 else ("⚡ High Conviction" if confidence > 50.0 else "👀 Watching")
                          watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": tag})
 
-        # Timestamp extraction
         if last_run_str == "Unknown":
             match = ts_pattern.search(line)
             if match:
@@ -194,9 +189,7 @@ def parse_latest_run_logic(logs):
                 except:
                     pass
 
-    # Deduplicate watchlist
     unique_watchlist = {v['Ticker']:v for v in watchlist}.values()
-    
     return last_run_str, last_run_timestamp, signals, list(unique_watchlist), neural_conviction
 
 def calculate_drawdown(df):
@@ -594,20 +587,29 @@ with tab1:
     # --- 2. NEURAL CONVICTION RADAR ---
     st.subheader("🧠 Neural Conviction Levels")
     if conviction_data:
-        # Load and sort data descending so the highest conviction is on the left
-        df_conv = pd.DataFrame(list(conviction_data.items()), columns=['Ticker', 'Confidence'])
+        # Convert nested dictionary to flat DataFrame
+        flat_data = [
+            {"Ticker": t, "Confidence": d["Confidence"], "Action": d["Action"]} 
+            for t, d in conviction_data.items()
+        ]
+        df_conv = pd.DataFrame(flat_data)
         df_conv = df_conv.sort_values(by='Confidence', ascending=False)
         
+        # Create Chart text combining Action and Confidence
+        df_conv['Chart_Text'] = df_conv.apply(lambda row: f"{row['Action']}<br>{row['Confidence']:.1f}%" if row['Action'] else f"{row['Confidence']:.1f}%", axis=1)
+
         fig_conf = px.bar(
             df_conv, 
             x='Ticker', 
             y='Confidence', 
             color='Confidence',
-            # Adjusted color scale: Dim Red (low) -> Yellow (mid) -> Bright Green (high)
             color_continuous_scale=['#4a1c1c', '#ffb000', '#00ff41'], 
             range_y=[0, 100],
-            text_auto='.1f'
+            text='Chart_Text' # <--- This puts the Action State on the bar
         )
+        
+        fig_conf.update_traces(textposition='inside', textfont_size=14, textfont_color='white')
+        
         fig_conf.update_layout(
             height=250, 
             margin=dict(l=0, r=0, t=10, b=10),
@@ -617,7 +619,6 @@ with tab1:
             paper_bgcolor='rgba(0,0,0,0)',
             font={'color': '#cccccc'},
             yaxis=dict(showgrid=True, gridcolor='#333'),
-            # Force Plotly to respect our sorted DataFrame
             xaxis=dict(showgrid=False, categoryorder='total descending') 
         )
         st.plotly_chart(fig_conf, use_container_width=True)
