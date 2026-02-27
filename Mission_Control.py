@@ -822,15 +822,58 @@ with tab1:
             st.caption("No recent orders found.")
 
 with tab2:
-    st.markdown("### Terminal Output (Last 50 Lines)")
+    st.markdown("### 📜 System Diagnostics & Terminal")
     
     if logs:
-        recent_logs = logs[-50:] 
-        formatted_logs = [format_log_line(line) for line in recent_logs]
-        log_html = "".join(formatted_logs)
-        st.markdown(f'<div class="terminal-box">{log_html}</div>', unsafe_allow_html=True)
+        # --- 1. HEALTH METRICS ---
+        log_text = "\n".join(logs)
+        err_count = log_text.count("[ERROR]") + log_text.count("[CRITICAL]")
+        warn_count = log_text.count("[WARNING]")
+        
+        c_diag1, c_diag2, c_diag3 = st.columns(3)
+        c_diag1.metric("🔍 Total Log Lines Buffered", len(logs))
+        
+        # Color-coded deltas to draw attention if things go wrong
+        c_diag2.metric("🟡 Warnings (Recent)", warn_count, delta="Review" if warn_count > 0 else "Clear", delta_color="off" if warn_count > 0 else "normal")
+        c_diag3.metric("🔴 Errors (Recent)", err_count, delta="Urgent" if err_count > 0 else "Clear", delta_color="inverse" if err_count > 0 else "normal")
+        
+        st.divider()
+        
+        # --- 2. INTERACTIVE CONTROLS ---
+        col_ctrl1, col_ctrl2 = st.columns([3, 1])
+        with col_ctrl1:
+            search_term = st.text_input("🔍 Search Logs (e.g., 'IONQ', 'Margin', 'Exception')", "")
+        with col_ctrl2:
+            log_level = st.selectbox("🚦 Filter Level", ["ALL", "ERROR", "WARNING", "INFO"])
+        
+        # --- FILTERING LOGIC ---
+        filtered_logs = logs.copy()
+        
+        if log_level != "ALL":
+            filtered_logs = [line for line in filtered_logs if f"[{log_level}]" in line]
+            
+        if search_term:
+            filtered_logs = [line for line in filtered_logs if search_term.lower() in line.lower()]
+        
+        # --- 3. TERMINAL RENDER ---
+        if filtered_logs:
+            # We don't slice [-50:] anymore because the user might be filtering for a specific 
+            # error that happened 60 lines ago. We show everything that matches the filter.
+            formatted_logs = [format_log_line(line) for line in filtered_logs]
+            log_html = "".join(formatted_logs)
+            st.markdown(f'<div class="terminal-box">{log_html}</div>', unsafe_allow_html=True)
+        else:
+            st.warning("No logs match your current search/filter criteria.")
+            
+        # --- 4. EXPORT BUTTON ---
+        st.download_button(
+            label="📥 Download Filtered Logs (.txt)",
+            data="\n".join(filtered_logs),
+            file_name=f"angel_logs_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.txt",
+            mime="text/plain"
+        )
     else:
-        st.write("No logs found.")
+        st.info("No logs retrieved from the server.")
 
 with tab3:
     # 1. Get History
