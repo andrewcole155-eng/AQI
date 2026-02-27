@@ -1017,17 +1017,8 @@ with tab3:
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             
-            # --- FIX: Safely extract and convert the peak timestamp to a string ---
-            peak_timestamp = hist_df_raw['timestamp'].loc[max_eq_idx]
-            # If there are duplicate max indexes, grab the first one safely
-            if isinstance(peak_timestamp, pd.Series):
-                peak_timestamp = peak_timestamp.iloc[0]
-            
-            # Convert to string to bypass Plotly's mathematical midpoint calculation bug
-            peak_str = peak_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-            
             # Add vertical line showing the peak
-            fig_dd.add_vline(x=peak_str, line_dash="dot", line_color="#cccccc", annotation_text="Peak")
+            fig_dd.add_vline(x=hist_df_raw['timestamp'].loc[max_eq_idx], line_dash="dot", line_color="#cccccc", annotation_text="Peak")
             st.plotly_chart(fig_dd, use_container_width=True)
 
         # --- ADDED: QUANTITATIVE RISK ANALYTICS ---
@@ -1201,78 +1192,15 @@ with tab3:
         else:
             st.info("Not enough data points for Physics analysis.")
 
-        # --- SECTION 5: PROBABILISTIC FORECASTING (MONTE CARLO) ---
+        # --- SECTION 5: FUTURE PROJECTIONS ---
         st.divider()
         
-        st.markdown(f"### 🎲 Monte Carlo Forward Simulation (1-Year Probability Cone)")
-        st.caption("Runs 100 randomized future market paths based on the bot's historical mean return and volatility.")
+        # Determine which CAGR to use for the projection
+        projection_rate = manual_cagr if use_manual_cagr else valid_cagr
+        proj_label = "Manual" if use_manual_cagr else "Adj."
         
-        # We need numpy for the simulations
-        import numpy as np 
-        
-        if not df_clean.empty and len(df_clean) > 5:
-            mean_ret = df_clean['daily_return'].mean()
-            std_ret = df_clean['daily_return'].std()
-            
-            # Override with manual inputs if the toggle is checked in the sidebar
-            if use_manual_cagr:
-                mean_ret = manual_cagr / 252 # Convert annual to daily
-                st.warning(f"Running simulation with forced manual input (CAGR: {manual_cagr*100:.1f}%)")
-            
-            days_to_sim = 252 # 1 Trading Year
-            sims = 100
-            np.random.seed(42) # Seed to prevent violent flashing on every refresh
-            
-            # Generate random normal returns
-            random_returns = np.random.normal(mean_ret, std_ret, (days_to_sim, sims))
-            
-            # Calculate cumulative price paths
-            price_paths = current_equity_raw * np.cumprod(1 + random_returns, axis=0)
-            mc_df = pd.DataFrame(price_paths)
-            
-            # Extract Quantiles (5th, 50th, 95th Percentiles)
-            p5 = mc_df.quantile(0.05, axis=1)
-            p50 = mc_df.quantile(0.50, axis=1)
-            p95 = mc_df.quantile(0.95, axis=1)
-            
-            # Create Future Dates
-            last_date = df_clean['timestamp'].iloc[-1]
-            future_dates = [last_date + pd.Timedelta(days=i) for i in range(1, days_to_sim + 1)]
-            
-            fig_mc = go.Figure()
-            
-            # Add Top Boundary (95th Percentile)
-            fig_mc.add_trace(go.Scatter(x=future_dates, y=p95, mode='lines', line=dict(color='#00ff41', width=1, dash='dash'), name='95th Pctl (Bull Case)'))
-            
-            # Add Bottom Boundary (5th Percentile) and fill area between
-            fig_mc.add_trace(go.Scatter(x=future_dates, y=p5, mode='lines', line=dict(color='#ff4b4b', width=1, dash='dash'), fill='tonexty', fillcolor='rgba(255, 255, 255, 0.05)', name='5th Pctl (Bear Case)'))
-            
-            # Add Median Path
-            fig_mc.add_trace(go.Scatter(x=future_dates, y=p50, mode='lines', line=dict(color='#569cd6', width=3), name='Median Expected'))
-            
-            fig_mc.update_layout(
-                height=400, margin=dict(l=0, r=0, t=10, b=0),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="#cccccc"),
-                yaxis_title="Projected Equity ($)", xaxis_title=None,
-                legend=dict(orientation="h", y=1.1, x=0)
-            )
-            
-            c_mc1, c_mc2 = st.columns([3, 1])
-            with c_mc1:
-                st.plotly_chart(fig_mc, use_container_width=True)
-            with c_mc2:
-                # Calculate ending values
-                val_med = p50.iloc[-1]
-                val_bull = p95.iloc[-1]
-                val_bear = p5.iloc[-1]
-                
-                st.metric("Expected Value (1 Yr)", f"${val_med:,.2f}", f"{((val_med/current_equity_raw)-1)*100:.1f}%")
-                st.metric("Bull Case (Top 5%)", f"${val_bull:,.2f}", f"+{((val_bull/current_equity_raw)-1)*100:.1f}%")
-                st.metric("Bear Case (Bottom 5%)", f"${val_bear:,.2f}", f"{((val_bear/current_equity_raw)-1)*100:.1f}%", delta_color="inverse")
-                
-        else:
-            st.info("Awaiting enough historical data to generate Monte Carlo simulations.")
+        # Calculate projection
+        proj_df = calculate_future_projections(current_equity_raw, projection_rate)
         
         st.markdown(f"### 🔮 Future Projections (Based on {proj_label} CAGR: {projection_rate:.1%})")
         
