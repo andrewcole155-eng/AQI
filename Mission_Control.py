@@ -515,8 +515,13 @@ if account:
     
     # --- ADDED: BOT HEARTBEAT COUNTDOWN ---
     if status_val == "🟢 Active" and seconds_ago < 300:
-        seconds_left = max(0, 300 - seconds_ago)
-        progress_pct = min(1.0, seconds_ago / 300.0)
+        # 1. Prevent negative time if server clocks are slightly skewed
+        safe_seconds_ago = max(0, seconds_ago) 
+        seconds_left = max(0, 300 - safe_seconds_ago)
+        
+        # 2. Strictly clamp the progress bar between 0.0 and 1.0
+        progress_pct = max(0.0, min(1.0, safe_seconds_ago / 300.0))
+        
         st.progress(progress_pct, text=f"⏳ Next Market Scan in ~{seconds_left}s")
 
 st.divider()
