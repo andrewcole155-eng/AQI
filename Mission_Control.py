@@ -1012,6 +1012,58 @@ with tab3:
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
 
+        # --- ADDED: QUANTITATIVE RISK ANALYTICS ---
+        st.divider()
+        st.subheader("🔬 Quantitative Risk Analytics")
+        
+        # Ensure daily returns exist for math
+        hist_df_raw['daily_return'] = hist_df_raw['equity'].pct_change()
+        df_clean = hist_df_raw.dropna(subset=['daily_return'])
+        
+        # 1. Math out Expectancy & Skew
+        avg_win = df_clean[df_clean['daily_return'] > 0]['daily_return'].mean()
+        avg_loss = abs(df_clean[df_clean['daily_return'] < 0]['daily_return'].mean())
+        payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0
+        skewness = df_clean['daily_return'].skew()
+        kurtosis = df_clean['daily_return'].kurtosis()
+        
+        cq1, cq2, cq3, cq4 = st.columns(4)
+        cq1.metric("Avg Up-Day", f"{avg_win*100:.2f}%")
+        cq2.metric("Avg Down-Day", f"-{avg_loss*100:.2f}%")
+        cq3.metric("Payoff Ratio", f"{payoff_ratio:.2f}", delta="Optimal > 1.5" if payoff_ratio > 1.5 else "Sub-Optimal", delta_color="normal" if payoff_ratio > 1.5 else "inverse")
+        cq4.metric("Kurtosis (Fat Tails)", f"{kurtosis:.2f}", delta="High Tail Risk" if kurtosis > 3 else "Normal Risk", delta_color="inverse" if kurtosis > 3 else "normal")
+
+        # 2. Charts: Distribution & Rolling Volatility
+        col_q1, col_q2 = st.columns(2)
+        
+        with col_q1:
+            st.markdown("**📊 Return Distribution**")
+            fig_dist = px.histogram(
+                df_clean, x='daily_return', nbins=50, 
+                marginal='box', color_discrete_sequence=['#569cd6']
+            )
+            fig_dist.add_vline(x=0, line_dash="dash", line_color="#ff4b4b")
+            fig_dist.update_layout(
+                height=280, margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                xaxis_tickformat='.1%', font=dict(color="#cccccc"),
+                xaxis_title="Daily Return %", yaxis_title="Frequency"
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+        with col_q2:
+            st.markdown("**🌪️ 21-Day Rolling Volatility (Annualized)**")
+            hist_df_raw['rolling_vol'] = hist_df_raw['daily_return'].rolling(21).std() * (252**0.5) * 100
+            fig_vol = px.line(hist_df_raw, x='timestamp', y='rolling_vol')
+            fig_vol.update_traces(line_color='#ffb000')
+            fig_vol.update_layout(
+                height=280, margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                yaxis_ticksuffix="%", xaxis_title=None, yaxis_title="Volatility %",
+                font=dict(color="#cccccc")
+            )
+            st.plotly_chart(fig_vol, use_container_width=True)
+
         # --- SECTION 3: TIME INTELLIGENCE ---
         st.divider()
         st.subheader("⏳ Time Intelligence (Seasonality)")
