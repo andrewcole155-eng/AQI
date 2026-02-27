@@ -85,10 +85,24 @@ def get_account_data(_api):
         # Convert Alpaca objects to simple dictionaries for safe caching
         account = _api.get_account()._raw
         positions = [p._raw for p in _api.list_positions()]
-        orders = [o._raw for o in _api.list_orders(status='all', limit=20, direction='desc')]
+        # Increased limit to 100 to ensure we capture older entry dates for the Time-Stop feature
+        orders = [o._raw for o in _api.list_orders(status='all', limit=100, direction='desc')]
         return account, positions, orders
     except:
         return None, [], []
+
+def extract_bot_states(logs):
+    """Extracts the exact number of tickers in each state from the end-of-cycle log."""
+    for line in reversed(logs):
+        if "Current states count" in line:
+            match = re.search(r"Counter\(\{([^}]+)\}\)", line)
+            if match:
+                state_str = match.group(1)
+                try:
+                    return dict((k.strip("' "), int(v)) for k, v in (item.split(':') for item in state_str.split(',')))
+                except:
+                    pass
+    return {}
 
 @st.cache_data(ttl=60)
 def get_portfolio_history(_api):
@@ -513,6 +527,17 @@ with tab1:
         elif avg_market_move < -0.5: st.error("BEARISH")
         else: st.warning("NEUTRAL")
 
+    # --- ADDED: INTERNAL TICKER STATES ---
+    st.markdown("#### 🤖 Internal Bot States")
+    bot_states = extract_bot_states(logs)
+    if bot_states:
+        sc1, sc2, sc3 = st.columns(3)
+        sc1.metric("💼 In Position", bot_states.get("IN_POSITION", 0))
+        sc2.metric("👀 Waiting", bot_states.get("WAITING", 0))
+        sc3.metric("🧊 Cooldown", bot_states.get("COOLDOWN", 0))
+    else:
+        st.caption("Awaiting state confirmation from next cycle...")
+
     st.divider()
 
     # --- 2. NEURAL CONVICTION RADAR ---
@@ -571,30 +596,71 @@ with tab1:
             st.info("No signals parsed from recent logs.")
 
     with c2:
-        st.subheader("💼 Active Portfolio")
+        st.subheader("💼 Capital & Active Portfolio")
+        
+        # --- ADDED: CAPITAL ALLOCATION DONUT CHART ---
+        allocation_data = [{"Asset": "CASH", "Value": float(account['buying_power'])}]
+        for p in positions:
+            allocation_data.append({"Asset": p['symbol'], "Value": abs(float(p['market_value']))})
+        
+        if allocation_data:
+            fig_alloc = px.pie(
+                pd.DataFrame(allocation_data), values='Value', names='Asset', hole=0.65,
+                color_discrete_sequence=['#2d2d2d'] + px.colors.qualitative.Pastel
+            )
+            fig_alloc.update_layout(
+                margin=dict(l=0, r=0, t=10, b=10), height=220,
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                font={'color': '#cccccc'}, showlegend=True,
+                legend=dict(orientation="v", yanchor="auto", y=0.5, xanchor="left", x=1.0)
+            )
+            fig_alloc.add_annotation(text=f"Total Eq<br>${equity:,.0f}", x=0.5, y=0.5, font_size=14, showarrow=False)
+            st.plotly_chart(fig_alloc, use_container_width=True)
+            
+        # --- UPGRADED PORTFOLIO TABLE ---
         if positions:
             pos_data = []
             for p in positions:
-                pl_val = float(p['unrealized_pl'])
-                pl_pct = float(p['unrealized_plpc']) * 100
+                sym = p['symbol']
+                side = p['side'].lower()
+                entry = float(p['avg_entry_price'])
+                current = float(p['current_price'])
+                
+                # Calculate Journey to TP (0.0 to 1.0)
+                if side == 'long':
+                    sl, tp = entry * 0.97, entry * 1.05
+                    progress = max(0.0, min(1.0, (current - sl) / (tp - sl)))
+                else:
+                    sl, tp = entry * 1.03, entry * 0.95
+                    progress = max(0.0, min(1.0, (sl - current) / (sl - tp)))
+
+                # Calculate Days Held (Max 5)
+                days_held = 0
+                for o in orders:
+                    if o['symbol'] == sym and o['status'] == 'filled':
+                        filled_dt = pd.to_datetime(o['filled_at']).tz_convert('UTC')
+                        now_dt = pd.Timestamp.now(tz='UTC')
+                        days_held = (now_dt - filled_dt).days
+                        break
+
                 pos_data.append({
-                    "Ticker": p['symbol'], 
-                    "Side": p['side'].upper(), 
+                    "Ticker": sym, 
+                    "Side": side.upper(), 
                     "Qty": float(p['qty']),
-                    "Entry": float(p['avg_entry_price']),
-                    "P/L ($)": pl_val, 
-                    "P/L (%)": pl_pct
+                    "P/L (%)": float(p['unrealized_plpc']) * 100,
+                    "Journey": progress,
+                    "Days Held": f"{days_held}/5"
                 })
             
-            df_pos = pd.DataFrame(pos_data)
-            # FIX: Updated width parameter
             st.dataframe(
-                df_pos,
+                pd.DataFrame(pos_data),
                 width="stretch",
                 column_config={
-                    "P/L ($)": st.column_config.NumberColumn("P/L ($)", format="$%.2f"),
                     "P/L (%)": st.column_config.NumberColumn("P/L (%)", format="%.2f%%"),
-                    "Entry": st.column_config.NumberColumn(format="$%.2f"),
+                    "Journey": st.column_config.ProgressColumn(
+                        "Journey to TP", help="Green bar moving right towards Take Profit.",
+                        min_value=0.0, max_value=1.0, format="%.2f"
+                    ),
                 },
                 hide_index=True
             )
