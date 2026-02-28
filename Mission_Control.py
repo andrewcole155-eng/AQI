@@ -582,7 +582,7 @@ with tab1:
         sentiment_score = 0.5
 
     st.markdown("### 🌡️ Market Pulse")
-    s_col1, s_col2 = st.columns([5, 1])
+    s_col1, s_col2, s_col3 = st.columns([3, 1, 6]) # The empty 3rd column acts as a spacer
     with s_col1:
         st.progress(int(max(0, min(100, sentiment_score * 100))))
     with s_col2:
@@ -595,7 +595,7 @@ with tab1:
     
     # Calculate exactly how much cash is locked in positions
     active_capital = sum([abs(float(p['market_value'])) for p in positions]) if positions else 0.0
-    cash_capital = float(account['buying_power']) if account else 0.0
+    cash_capital = equity - active_capital
     total_capital = active_capital + cash_capital
     
     # Calculate percentages
@@ -607,7 +607,8 @@ with tab1:
     sc1, sc2, sc3 = st.columns(3)
     sc1.metric("💼 Active Capital", f"${active_capital:,.2f}", f"{active_pct:.1f}% Deployed", delta_color="off")
     sc2.metric("💵 Dry Powder", f"${cash_capital:,.2f}", f"{cash_pct:.1f}% Cash", delta_color="off")
-    sc3.metric("🤖 Active Agents", f"{bot_states.get('IN_POSITION', 0)} / {len(bot_states) if bot_states else 8}")
+    total_monitored = len(config.get("tickers", ['IONQ','KR','KO','OXY','BAC','GM','PFE','PYPL']))
+    sc3.metric("🤖 Active Agents", f"{len(positions)} / {total_monitored}")
 
     # --- ADDED: NEURAL SKEW / MACRO BIAS ---
     if parsed_signals:
@@ -655,7 +656,7 @@ with tab1:
         fig_conf.update_traces(textposition='inside', textfont_size=14, textfont_color='white')
         
         fig_conf.update_layout(
-            height=250, 
+            height=150, 
             margin=dict(l=0, r=0, t=10, b=10),
             xaxis_title=None, 
             yaxis_title="Confidence %",
@@ -957,7 +958,7 @@ with tab3:
         proj_df = calculate_future_projections(current_equity_raw, projection_rate)
 
         # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
-        col_gauge, col_scorecard = st.columns([1, 2])
+        col_gauge, col_scorecard = st.columns([1, 2.5])
         
         with col_gauge:
             fig_gauge = go.Figure(go.Indicator(
@@ -1058,7 +1059,7 @@ with tab3:
             long_wr = (long_wins / total_longs * 100) if total_longs > 0 else 0
             short_wr = (short_wins / total_shorts * 100) if total_shorts > 0 else 0
             
-            c_ls1, c_ls2 = st.columns(2)
+            c_ls1, c_ls2, _spacer = st.columns([1, 1, 4])
             c_ls1.metric("🟢 Long Win Rate (Active)", f"{long_wr:.1f}%", f"{total_longs} positions", delta_color="off")
             c_ls2.metric("🔴 Short Win Rate (Active)", f"{short_wr:.1f}%", f"{total_shorts} positions", delta_color="off")
             st.caption("*Note: Displays active state. Full historical attribution requires database integration.*")
@@ -1120,11 +1121,12 @@ with tab3:
                 line=dict(color='#ffb000', width=3),
                 yaxis='y2'
             ))
+            # For BOTH fig_dow and fig_moy, update the height and colors
             fig_dow.update_layout(
                 yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
                 yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
                 showlegend=False,
-                height=350,
+                height=220, # <--- REDUCE FROM 350 to 220
                 margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
@@ -1156,7 +1158,7 @@ with tab3:
                 yaxis=dict(title="Avg Return (%)", showgrid=True, gridcolor='#333'),
                 yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right', range=[0, 110], showgrid=False),
                 showlegend=False,
-                height=350,
+                height=220,
                 margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
@@ -1198,7 +1200,7 @@ with tab3:
                 paper_bgcolor='rgba(0,0,0,0)',
                 font=dict(color="#cccccc"),
                 margin=dict(l=0, r=0, t=0, b=0),
-                height=600 
+                height=400 
             )
             st.plotly_chart(fig_3d, use_container_width=True)
         else:
