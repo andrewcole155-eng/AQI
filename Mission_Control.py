@@ -562,16 +562,24 @@ with tab1:
         elif avg_market_move < -0.5: st.error("BEARISH")
         else: st.warning("NEUTRAL")
 
-    # --- ADDED: INTERNAL TICKER STATES ---
-    st.markdown("#### 🤖 Internal Bot States")
+    # --- UPGRADED: CAPITAL DEPLOYMENT STATES ---
+    st.markdown("#### 🔋 Capital Deployment Status")
+    
+    # Calculate exactly how much cash is locked in positions
+    active_capital = sum([abs(float(p['market_value'])) for p in positions]) if positions else 0.0
+    cash_capital = float(account['buying_power']) if account else 0.0
+    total_capital = active_capital + cash_capital
+    
+    # Calculate percentages
+    active_pct = (active_capital / total_capital * 100) if total_capital > 0 else 0
+    cash_pct = (cash_capital / total_capital * 100) if total_capital > 0 else 100
+    
     bot_states = extract_bot_states(logs)
-    if bot_states:
-        sc1, sc2, sc3 = st.columns(3)
-        sc1.metric("💼 In Position", bot_states.get("IN_POSITION", 0))
-        sc2.metric("👀 Waiting", bot_states.get("WAITING", 0))
-        sc3.metric("🧊 Cooldown", bot_states.get("COOLDOWN", 0))
-    else:
-        st.caption("Awaiting state confirmation from next cycle...")
+    
+    sc1, sc2, sc3 = st.columns(3)
+    sc1.metric("💼 Active Capital", f"${active_capital:,.2f}", f"{active_pct:.1f}% Deployed", delta_color="off")
+    sc2.metric("💵 Dry Powder", f"${cash_capital:,.2f}", f"{cash_pct:.1f}% Cash", delta_color="off")
+    sc3.metric("🤖 Active Agents", f"{bot_states.get('IN_POSITION', 0)} / {len(bot_states) if bot_states else 8}")
 
     # --- ADDED: NEURAL SKEW / MACRO BIAS ---
     if parsed_signals:
@@ -760,39 +768,46 @@ with tab1:
                 },
                 hide_index=True
             )
-            # --- ADDED: THE FLASHPOINT ALERT ---
-            st.markdown("##### 🎯 Immediate Flashpoints")
+            # --- UPGRADED: THE FLASHPOINT ALERT (R-MULTIPLES) ---
+            st.markdown("##### 🎯 Immediate Flashpoints (R-Multiple Floating)")
             closest_tp, closest_sl = None, None
             max_tp_prog, min_sl_prog = 0.0, 1.0
-            
+            tp_r_floating, sl_r_floating = 0.0, 0.0
+
             for p_data in pos_data:
                 prog = p_data["Journey"]
                 if prog > max_tp_prog:
-                    max_tp_prog, closest_tp = prog, p_data["Ticker"]
+                    max_tp_prog = prog
+                    closest_tp = p_data["Ticker"]
+                    # If TP is 2R, floating R is (Progress * 2)
+                    tp_r_floating = prog * 2.0 
+                    
                 if prog < min_sl_prog:
-                    min_sl_prog, closest_sl = prog, p_data["Ticker"]
-            
+                    min_sl_prog = prog
+                    closest_sl = p_data["Ticker"]
+                    # If SL is -1R, floating R is -(1 - Progress)
+                    sl_r_floating = -(1.0 - prog)
+
             f1, f2 = st.columns(2)
             if closest_tp and max_tp_prog > 0.0: 
-                f1.success(f"🟢 **Closest to TP:** {closest_tp} ({max_tp_prog*100:.0f}%)")
+                f1.success(f"🟢 **Near TP:** {closest_tp} (Floating: +{tp_r_floating:.1f}R)")
             if closest_sl and min_sl_prog < 1.0: 
-                f2.error(f"🔴 **Closest to SL:** {closest_sl} ({(1-min_sl_prog)*100:.0f}%)")
+                f2.error(f"🔴 **Near SL:** {closest_sl} (Floating: {sl_r_floating:.1f}R)")
                 
         else:
             st.caption("No active positions currently held.")
 
-        # --- RECENT ORDERS ---
+        # --- UPGRADED: RECENT ORDERS & SLIPPAGE ---
         st.divider()
-        
-        # --- ADDED: DAILY EXECUTION VELOCITY ---
+
         today_utc = pd.Timestamp.now(tz='UTC').date()
         if isinstance(orders, list):
             trades_today = sum(1 for o in orders if isinstance(o, dict) and o.get('status') == 'filled' and pd.to_datetime(o.get('filled_at')).tz_convert('UTC').date() == today_utc)
         else:
             trades_today = 0
-        
+
         c_ord1, c_ord2 = st.columns([3, 1])
-        c_ord1.subheader("📜 Recent Orders")
+        c_ord1.subheader("📜 Recent Fills & Execution Quality")
         if trades_today > 4:
             c_ord2.error(f"⚠️ Trades Today: {trades_today}")
         else:
@@ -801,25 +816,47 @@ with tab1:
         if orders and isinstance(orders, list):
             order_data = []
             for o in orders[:5]: 
-                if isinstance(o, dict):
-                    t = o.get('created_at', '')
+                if isinstance(o, dict) and o.get('status') == 'filled':
+                    t = o.get('filled_at', '')
                     t_fmt = t[5:16].replace('T', ' ') if len(t) >= 16 else t
                     
+                    # Calculate Slippage if it was a Limit order that filled
+                    limit_price = float(o.get('limit_price', 0)) if o.get('limit_price') else 0.0
+                    fill_price = float(o.get('filled_avg_price', 0)) if o.get('filled_avg_price') else 0.0
+                    
+                    slippage = 0.0
+                    if limit_price > 0 and fill_price > 0:
+                        if o.get('side') == 'buy':
+                            slippage = ((fill_price - limit_price) / limit_price) * 100
+                        else:
+                            slippage = ((limit_price - fill_price) / limit_price) * 100
+
                     order_data.append({
                         "Time": t_fmt,
                         "Ticker": o.get('symbol', 'N/A'),
                         "Side": o.get('side', 'N/A').upper(),
-                        "Qty": o.get('qty', '0'),
-                        "Status": o.get('status', 'N/A').title()
+                        "Qty": o.get('filled_qty', '0'),
+                        "Fill Price": f"${fill_price:.2f}",
+                        "Slippage": f"{slippage:+.2f}%" if limit_price > 0 else "N/A (MKT)"
                     })
-            
+
             if order_data:
                 df_orders = pd.DataFrame(order_data)
-                st.dataframe(df_orders, width="stretch", hide_index=True)
+                
+                # Apply conditional formatting to the slippage column
+                def highlight_slippage(val):
+                    if isinstance(val, str) and "%" in val:
+                        num = float(val.replace("%", "").replace("+", ""))
+                        if num > 0: return 'color: #ff4b4b' # Red for bad slippage
+                        if num < 0: return 'color: #00ff41' # Green for price improvement
+                    return ''
+
+                # Use .map() for modern Pandas formatting
+                st.dataframe(df_orders.style.map(highlight_slippage, subset=['Slippage']), width="stretch", hide_index=True)
             else:
-                st.caption("No recent orders found.")
+                st.caption("No recent filled orders found.")
         else:
-            st.caption("No recent orders found.")
+            st.caption("No recent filled orders found.")
 
 with tab2:
     st.markdown("### Terminal Output (Last 50 Lines)")
