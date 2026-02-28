@@ -694,13 +694,14 @@ with tab1:
         else:
             st.info("No signals parsed from recent logs.")
 
-    with c2:
-        st.subheader("💼 Capital & Active Portfolio")
-        
-        # --- ADDED: CAPITAL ALLOCATION DONUT CHART ---
-        allocation_data = [{"Asset": "CASH", "Value": float(account['buying_power'])}]
-        for p in positions:
-            allocation_data.append({"Asset": p['symbol'], "Value": abs(float(p['market_value']))})
+        with c2:
+            st.subheader("💼 Capital & Active Portfolio")
+            
+            # --- UPGRADED: CAPITAL ALLOCATION DONUT CHART ---
+            # FIX: Use the 'cash_capital' calculated earlier instead of margin-inflated buying_power
+            allocation_data = [{"Asset": "CASH", "Value": cash_capital}]
+            for p in positions:
+                allocation_data.append({"Asset": p['symbol'], "Value": abs(float(p['market_value']))})
         
         if allocation_data:
             fig_alloc = px.pie(
