@@ -595,7 +595,7 @@ with tab1:
     
     # Calculate exactly how much cash is locked in positions
     active_capital = sum([abs(float(p['market_value'])) for p in positions]) if positions else 0.0
-    cash_capital = equity - active_capital
+    cash_capital = equity - active_capital  # <-- Uses the corrected cash calculation
     total_capital = active_capital + cash_capital
     
     # Calculate percentages
@@ -607,8 +607,10 @@ with tab1:
     sc1, sc2, sc3 = st.columns(3)
     sc1.metric("💼 Active Capital", f"${active_capital:,.2f}", f"{active_pct:.1f}% Deployed", delta_color="off")
     sc2.metric("💵 Dry Powder", f"${cash_capital:,.2f}", f"{cash_pct:.1f}% Cash", delta_color="off")
-    total_monitored = len(config.get("tickers", ['IONQ','KR','KO','OXY','BAC','GM','PFE','PYPL']))
-    sc3.metric("🤖 Active Agents", f"{len(positions)} / {total_monitored}")
+    
+    # FIX: Hardcoded the ticker list so it doesn't look for the missing 'config' variable
+    monitored_tickers = ['IONQ', 'KR', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL']
+    sc3.metric("🤖 Active Agents", f"{len(positions)} / {len(monitored_tickers)}")
 
     # --- ADDED: NEURAL SKEW / MACRO BIAS ---
     if parsed_signals:
