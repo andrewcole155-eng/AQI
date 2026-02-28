@@ -193,10 +193,16 @@ def parse_latest_run_logic(logs):
     return last_run_str, last_run_timestamp, signals, list(unique_watchlist), neural_conviction
 
 def calculate_drawdown(df):
-    """Calculates the Drawdown (percentage drop from peak equity)."""
+    """Calculates Drawdown % and Time Underwater (Recovery Days)."""
     df = df.copy()
     df['peak'] = df['equity'].cummax()
     df['drawdown'] = (df['equity'] - df['peak']) / df['peak']
+    
+    # Calculate days spent below the high-water mark
+    df['is_high'] = df['equity'] >= df['peak']
+    # Groups consecutive underwater days and counts them
+    df['underwater_days'] = df.groupby(df['is_high'].cumsum()).cumcount()
+    
     return df
 
 def calculate_daily_returns(df):
@@ -280,6 +286,11 @@ def calculate_advanced_metrics(hist_df):
     downside_std = df[df['daily_return'] < 0]['daily_return'].std()
     sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
 
+    # --- NEW: Recovery Time ---
+    # We pass df to calculate_drawdown first to get the 'underwater_days' column
+    df_with_dd = calculate_drawdown(df)
+    max_underwater_days = int(df_with_dd['underwater_days'].max()) if 'underwater_days' in df_with_dd.columns else 0
+
     # --- 2. PROFITABILITY ---
     df['diff'] = df['equity'].diff()
     gross_profit = df[df['diff'] > 0]['diff'].sum()
@@ -294,6 +305,7 @@ def calculate_advanced_metrics(hist_df):
     return {
         "CAGR": cagr,
         "Max Drawdown": max_dd,
+        "Recovery Time": max_underwater_days,
         "Sharpe Ratio": sharpe,
         "Sortino Ratio": sortino,
         "MAR Ratio": mar,
@@ -306,17 +318,18 @@ def create_scorecard_df(metrics):
     
     data = [
         # --- RETURN ---
-        {"METRIC": "CAGR (Account)", "YOURS": f"{metrics['CAGR']:.1%}", "BENCHMARK": "> 20%", "VERDICT": "🏆 Elite" if metrics['CAGR'] > 0.2 else "😐 Std"},
-        {"METRIC": "MAR Ratio", "YOURS": f"{metrics['MAR Ratio']:.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics['MAR Ratio'] > 1.0 else "😐 Std"},
+        {"METRIC": "CAGR (Account)", "YOURS": f"{metrics.get('CAGR', 0):.1%}", "BENCHMARK": "> 20%", "VERDICT": "🏆 Elite" if metrics.get('CAGR', 0) > 0.2 else "😐 Std"},
+        {"METRIC": "MAR Ratio", "YOURS": f"{metrics.get('MAR Ratio', 0):.2f}", "BENCHMARK": "> 1.0", "VERDICT": "🚀 Elite" if metrics.get('MAR Ratio', 0) > 1.0 else "😐 Std"},
         
         # --- RISK ---
-        {"METRIC": "Max Drawdown", "YOURS": f"{metrics['Max Drawdown']:.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics['Max Drawdown']) < 0.15 else "⚠️ High Risk"},
-        {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics['Sharpe Ratio']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics['Sharpe Ratio'] > 1.5 else "😐 Std"},
-        {"METRIC": "Sortino Ratio", "YOURS": f"{metrics['Sortino Ratio']:.2f}", "BENCHMARK": "> 2.0", "VERDICT": "💎 Strong" if metrics['Sortino Ratio'] > 2.0 else "😐 Std"},
+        {"METRIC": "Max Drawdown", "YOURS": f"{metrics.get('Max Drawdown', 0):.1%}", "BENCHMARK": "< 15%", "VERDICT": "🛡️ Safe" if abs(metrics.get('Max Drawdown', 0)) < 0.15 else "⚠️ High Risk"},
+        {"METRIC": "Recovery Time", "YOURS": f"{metrics.get('Recovery Time', 0)} Days", "BENCHMARK": "< 30 Days", "VERDICT": "⚡ Fast" if metrics.get('Recovery Time', 0) < 30 else "🐢 Slow"},
+        {"METRIC": "Sharpe Ratio", "YOURS": f"{metrics.get('Sharpe Ratio', 0):.2f}", "BENCHMARK": "> 1.5", "VERDICT": "🔥 Good" if metrics.get('Sharpe Ratio', 0) > 1.5 else "😐 Std"},
+        {"METRIC": "Sortino Ratio", "YOURS": f"{metrics.get('Sortino Ratio', 0):.2f}", "BENCHMARK": "> 2.0", "VERDICT": "💎 Strong" if metrics.get('Sortino Ratio', 0) > 2.0 else "😐 Std"},
 
         # --- CONSISTENCY ---
-        {"METRIC": "Profit Factor", "YOURS": f"{metrics['Profit Factor']:.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics['Profit Factor'] > 1.5 else "😐 Std"},
-        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics['Win Rate (Daily)']:.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics['Win Rate (Daily)'] > 0.5 else "🔻 Low"},
+        {"METRIC": "Profit Factor", "YOURS": f"{metrics.get('Profit Factor', 0):.2f}", "BENCHMARK": "> 1.5", "VERDICT": "💰 Rich" if metrics.get('Profit Factor', 0) > 1.5 else "😐 Std"},
+        {"METRIC": "Daily Win Rate", "YOURS": f"{metrics.get('Win Rate (Daily)', 0):.0%}", "BENCHMARK": "50-55%", "VERDICT": "✅ Stable" if metrics.get('Win Rate (Daily)', 0) > 0.5 else "🔻 Low"},
     ]
     return pd.DataFrame(data)
 
@@ -414,6 +427,21 @@ def calculate_3d_physics(df):
     phys_df['jerk_smooth'] = phys_df['jerk'].rolling(3).mean()
     
     return phys_df.dropna()
+
+def calculate_rolling_edge(df, window=30):
+    """Calculates 30-day rolling return and Sharpe to monitor current momentum."""
+    r_df = df.copy()
+    r_df['daily_return'] = r_df['equity'].pct_change()
+    
+    # 30-Day Return
+    r_df['rolling_return'] = r_df['equity'].pct_change(periods=window) * 100
+    
+    # 30-Day Sharpe
+    roll_mean = r_df['daily_return'].rolling(window).mean()
+    roll_std = r_df['daily_return'].rolling(window).std()
+    r_df['rolling_sharpe'] = (roll_mean / roll_std) * (252 ** 0.5)
+    
+    return r_df.dropna(subset=['rolling_return', 'rolling_sharpe'])
 
 def format_log_line(line):
     """Formats a single log line to look like VS Code syntax highlighting."""
@@ -925,7 +953,7 @@ with tab3:
         # C. PROJECTIONS: Use valid_cagr (or manual) applied to Real Money
         projection_rate = manual_cagr if use_manual_cagr else valid_cagr
         
-        # FIXED LINE BELOW: Added the closing parenthesis
+        # Calculate projection
         proj_df = calculate_future_projections(current_equity_raw, projection_rate)
 
         # --- SECTION 1: THE INSTITUTIONAL GAUGE ---
@@ -1005,6 +1033,65 @@ with tab3:
             fig_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
             fig_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis_title=None, yaxis_title=None, showlegend=False, height=300, yaxis=dict(tickformat=".1%"))
             st.plotly_chart(fig_dd, use_container_width=True)
+
+        # --- NEW SECTION: LONG VS SHORT ATTRIBUTION ---
+        st.divider()
+        st.subheader("⚔️ Long vs. Short Attribution")
+        
+        if isinstance(orders, list) and len(orders) > 0:
+            long_wins, long_losses = 0, 0
+            short_wins, short_losses = 0, 0
+            
+            # Simple heuristic: Look at realized PnL of closed legs
+            for pos in positions:
+                # Currently active positions (unrealized)
+                if pos['side'] == 'long':
+                    if float(pos['unrealized_pl']) > 0: long_wins += 1
+                    else: long_losses += 1
+                elif pos['side'] == 'short':
+                    if float(pos['unrealized_pl']) > 0: short_wins += 1
+                    else: short_losses += 1
+
+            total_longs = long_wins + long_losses
+            total_shorts = short_wins + short_losses
+            
+            long_wr = (long_wins / total_longs * 100) if total_longs > 0 else 0
+            short_wr = (short_wins / total_shorts * 100) if total_shorts > 0 else 0
+            
+            c_ls1, c_ls2 = st.columns(2)
+            c_ls1.metric("🟢 Long Win Rate (Active)", f"{long_wr:.1f}%", f"{total_longs} positions", delta_color="off")
+            c_ls2.metric("🔴 Short Win Rate (Active)", f"{short_wr:.1f}%", f"{total_shorts} positions", delta_color="off")
+            st.caption("*Note: Displays active state. Full historical attribution requires database integration.*")
+
+        # --- NEW SECTION: ROLLING EDGE ---
+        st.divider()
+        st.markdown("### 🔄 30-Day Rolling Edge (Current Momentum)")
+        
+        roll_df = calculate_rolling_edge(hist_df_adj, window=30)
+        
+        if not roll_df.empty:
+            c_roll1, c_roll2 = st.columns(2)
+            
+            with c_roll1:
+                st.caption("30-Day Rolling Return (%)")
+                fig_roll_ret = px.area(roll_df, x='timestamp', y='rolling_return')
+                # Color green if positive, red if negative
+                fig_roll_ret.update_traces(line_color='#569cd6', fillcolor='rgba(86, 156, 214, 0.2)')
+                fig_roll_ret.add_hline(y=0, line_dash="dash", line_color="white")
+                fig_roll_ret.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_ret, use_container_width=True)
+
+            with c_roll2:
+                st.caption("30-Day Rolling Sharpe Ratio")
+                fig_roll_shp = px.line(roll_df, x='timestamp', y='rolling_sharpe')
+                fig_roll_shp.update_traces(line_color='#c586c0')
+                # Institutional benchmark line at 1.5
+                fig_roll_shp.add_hline(y=1.5, line_dash="dot", line_color="#00ff41", annotation_text="Elite Target")
+                fig_roll_shp.add_hline(y=0, line_dash="dash", line_color="#ff4b4b")
+                fig_roll_shp.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_shp, use_container_width=True)
+        else:
+            st.caption("Not enough data yet for 30-Day Rolling metrics.")
 
         # --- SECTION 3: TIME INTELLIGENCE ---
         st.divider()
