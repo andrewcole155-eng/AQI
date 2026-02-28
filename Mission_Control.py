@@ -681,27 +681,25 @@ with tab1:
         st.subheader("🔭 Opportunity Watchlist")
         if watchlist_data:
             wl_df = pd.DataFrame(watchlist_data)
-            # FIX: Updated width parameter
-            st.dataframe(wl_df, width="stretch", hide_index=True)
+            st.dataframe(wl_df, use_container_width=True, hide_index=True)
         else:
             st.caption("No high-confidence setups detected yet.")
 
         st.subheader("📝 Decision Log")
         if parsed_signals:
             sig_df = pd.DataFrame(list(parsed_signals.items()), columns=["Ticker", "Decision"])
-            # FIX: Updated width parameter
-            st.dataframe(sig_df, width="stretch", hide_index=True)
+            st.dataframe(sig_df, use_container_width=True, hide_index=True)
         else:
             st.info("No signals parsed from recent logs.")
 
-        with c2:
-            st.subheader("💼 Capital & Active Portfolio")
-            
-            # --- UPGRADED: CAPITAL ALLOCATION DONUT CHART ---
-            # FIX: Use the 'cash_capital' calculated earlier instead of margin-inflated buying_power
-            allocation_data = [{"Asset": "CASH", "Value": cash_capital}]
-            for p in positions:
-                allocation_data.append({"Asset": p['symbol'], "Value": abs(float(p['market_value']))})
+    with c2:
+        st.subheader("💼 Capital & Active Portfolio")
+        
+        # --- UPGRADED: CAPITAL ALLOCATION DONUT CHART ---
+        # Uses the 'cash_capital' calculated at the top of Tab 1 (fixes the 78% bug)
+        allocation_data = [{"Asset": "CASH", "Value": cash_capital}]
+        for p in positions:
+            allocation_data.append({"Asset": p['symbol'], "Value": abs(float(p['market_value']))})
         
         if allocation_data:
             fig_alloc = px.pie(
@@ -718,8 +716,8 @@ with tab1:
             st.plotly_chart(fig_alloc, use_container_width=True)
             
             # --- ADDED: NEXT SLOT DEPLOYMENT ESTIMATE ---
-            # Based on your bot's active_ticker_count = 8 logic
-            est_slot_size = equity / 8
+            monitored_tickers = ['IONQ', 'KR', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL']
+            est_slot_size = equity / len(monitored_tickers)
             st.caption(f"🤖 **Bot Pre-Auth:** Estimated next trade size is **~${est_slot_size:,.2f}** per signal.")
             
             # --- ADDED: SECTOR / INDEX EXPOSURE ---
