@@ -804,31 +804,32 @@ with tab1:
                 },
                 hide_index=True
             )
-            # --- UPGRADED: THE FLASHPOINT ALERT (R-MULTIPLES) ---
-            st.markdown("##### 🎯 Immediate Flashpoints (R-Multiple Floating)")
+            # --- UPGRADED: THE FLASHPOINT ALERT (TRUE R-MULTIPLES) ---
+            st.markdown("##### 🎯 Immediate Flashpoints (True R-Multiple)")
             closest_tp, closest_sl = None, None
-            max_tp_prog, min_sl_prog = 0.0, 1.0
-            tp_r_floating, sl_r_floating = 0.0, 0.0
+            max_r, min_r = -999.0, 999.0
 
             for p_data in pos_data:
-                prog = p_data["Journey"]
-                if prog > max_tp_prog:
-                    max_tp_prog = prog
+                # Calculate True R: (Current PnL %) / (Stop Loss %)
+                # Assumes standard 3% SL from bot config
+                sl_pct = 3.0 
+                true_r = p_data["P/L (%)"] / sl_pct
+                
+                # Find the trade closest to Take Profit (Highest +R)
+                if true_r > max_r:
+                    max_r = true_r
                     closest_tp = p_data["Ticker"]
-                    # If TP is 2R, floating R is (Progress * 2)
-                    tp_r_floating = prog * 2.0 
                     
-                if prog < min_sl_prog:
-                    min_sl_prog = prog
+                # Find the trade closest to Stop Loss (Lowest -R)
+                if true_r < min_r:
+                    min_r = true_r
                     closest_sl = p_data["Ticker"]
-                    # If SL is -1R, floating R is -(1 - Progress)
-                    sl_r_floating = -(1.0 - prog)
 
             f1, f2 = st.columns(2)
-            if closest_tp and max_tp_prog > 0.0: 
-                f1.success(f"🟢 **Near TP:** {closest_tp} (Floating: +{tp_r_floating:.1f}R)")
-            if closest_sl and min_sl_prog < 1.0: 
-                f2.error(f"🔴 **Near SL:** {closest_sl} (Floating: {sl_r_floating:.1f}R)")
+            if closest_tp and max_r > 0: 
+                f1.success(f"🟢 **Highest R:** {closest_tp} (Floating: +{max_r:.2f}R)")
+            if closest_sl and min_r < 0: 
+                f2.error(f"🔴 **Lowest R:** {closest_sl} (Floating: {min_r:.2f}R)")
                 
         else:
             st.caption("No active positions currently held.")
