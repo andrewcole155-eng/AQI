@@ -753,6 +753,10 @@ with tab1:
                 side = p['side'].lower()
                 entry = float(p['avg_entry_price'])
                 current = float(p['current_price'])
+                qty = abs(float(p['qty']))
+                
+                # Calculate Invested Amount
+                invested_amt = entry * qty
                 
                 # Calculate Journey to TP (0.0 to 1.0)
                 if side == 'long':
@@ -779,8 +783,9 @@ with tab1:
 
                 pos_data.append({
                     "Ticker": sym, 
-                    "Side": side.upper(), 
-                    "Qty": float(p['qty']),
+                    "Side": side.upper(),
+                    "Invested": invested_amt, # <--- NEW
+                    "Qty": qty,
                     "P/L (%)": float(p['unrealized_plpc']) * 100,
                     "Journey": progress,
                     "Days Held": f"{days_held}/5"
@@ -788,8 +793,9 @@ with tab1:
             
             st.dataframe(
                 pd.DataFrame(pos_data),
-                width="stretch",
+                use_container_width=True,
                 column_config={
+                    "Invested": st.column_config.NumberColumn("Invested", format="$%.2f"), # <--- FORMATTED AS CURRENCY
                     "P/L (%)": st.column_config.NumberColumn("P/L (%)", format="%.2f%%"),
                     "Journey": st.column_config.ProgressColumn(
                         "Journey to TP", help="Green bar moving right towards Take Profit.",
