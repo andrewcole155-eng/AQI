@@ -656,7 +656,7 @@ with tab1:
     sc2.metric("💵 Dry Powder", f"${cash_capital:,.2f}", f"{cash_pct:.1f}% Cash", delta_color="off")
     
     # FIX: Hardcoded the ticker list so it doesn't look for the missing 'config' variable
-    monitored_tickers = ['IONQ', 'KR', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL']
+    monitored_tickers = ['IONQ', 'KR', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL','FCX']
     sc3.metric("🤖 Active Agents", f"{len(positions)} / {len(monitored_tickers)}")
 
     # --- ADDED: NEURAL SKEW / MACRO BIAS ---
@@ -808,7 +808,7 @@ with tab1:
             st.plotly_chart(fig_alloc, use_container_width=True)
             
             # --- ADDED: NEXT SLOT DEPLOYMENT ESTIMATE ---
-            monitored_tickers = ['IONQ', 'KR', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL']
+            monitored_tickers = ['IONQ', 'KR', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL', 'FCX']
             est_slot_size = equity / len(monitored_tickers)
             st.caption(f"🤖 **Bot Pre-Auth:** Estimated next trade size is **~${est_slot_size:,.2f}** per signal.")
             
@@ -817,9 +817,8 @@ with tab1:
                 'MARA': 'BLOK', 'PLTR': 'IGV', 'SOFI': 'XLF', 'HOOD': 'XLF',
                 'INTC': 'SOXX', 'IONQ': 'QTUM', 'OXY': 'XLE', 'PYPL': 'XLK',
                 'CSCO': 'XLK', 'HPE': 'XLK', 'F': 'XLY', 'BAC': 'XLF',
-                'KO': 'XLP', 'KR': 'XLP', 'PFE': 'XLV', 'GM': 'XLY'
+                'KO': 'XLP', 'KR': 'XLP', 'PFE': 'XLV', 'GM': 'XLY', 'FCX': 'XLB', 
             }
-            
             sector_data = {}
             for p in positions:
                 sec = ASSET_INDEX_MAP.get(p['symbol'], 'Other')
