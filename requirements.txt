@@ -4,3 +4,5 @@ plotly
 alpaca-trade-api
 gspread
 yfinance
+psutil
+requests
