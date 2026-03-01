@@ -9,6 +9,9 @@ import gspread
 from datetime import datetime, timedelta
 import pytz
 import plotly.graph_objects as go
+import yfinance as yf
+import psutil
+import requests
 
 st.set_page_config(
     page_title="Angel V6 Mission Control",
@@ -191,6 +194,42 @@ def parse_latest_run_logic(logs):
 
     unique_watchlist = {v['Ticker']:v for v in watchlist}.values()
     return last_run_str, last_run_timestamp, signals, list(unique_watchlist), neural_conviction
+
+@st.cache_data(ttl=300)
+def get_market_benchmark():
+    """Fetches SPY daily return for the Alpha calculation."""
+    try:
+        spy = yf.Ticker("SPY")
+        hist = spy.history(period="2d")
+        if len(hist) >= 2:
+            return ((hist['Close'].iloc[-1] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
+        return 0.0
+    except:
+        return 0.0
+
+@st.cache_data(ttl=3600)
+def get_correlation_matrix(tickers):
+    """Generates a 30-day correlation matrix for active positions."""
+    if not tickers or len(tickers) < 2: return None
+    try:
+        df = yf.download(tickers, period="1mo", interval="1d", progress=False)['Close']
+        if isinstance(df, pd.Series): return None
+        return df.corr()
+    except:
+        return None
+
+def get_system_telemetry():
+    """Fetches local CPU, RAM, and API latency."""
+    cpu_pct = psutil.cpu_percent(interval=0.1)
+    ram_pct = psutil.virtual_memory().percent
+    try:
+        start = time.time()
+        requests.get("https://api.alpaca.markets/v2/clock", timeout=2)
+        latency = int((time.time() - start) * 1000)
+    except:
+        latency = 999
+    return cpu_pct, ram_pct, latency
+
 
 def calculate_drawdown(df):
     """Calculates Drawdown % and Time Underwater (Recovery Days)."""
@@ -492,7 +531,8 @@ if not api: st.stop()
 account, positions, orders = get_account_data(api)
 
 if account:
-    col1, col2, col3, col_var, col4 = st.columns(5) # Added a 5th column
+    # Expanded to 6 columns to fit the Alpha Gauge
+    col1, col2, col_alpha, col3, col_var, col4 = st.columns(6) 
     
     equity = float(account['equity'])
     last_equity = float(account['last_equity'])
@@ -501,13 +541,20 @@ if account:
     daily_pl_pct = (equity - last_equity) / last_equity * 100
     daily_pl_abs = equity - last_equity
     
-    # --- ADDED: VALUE AT RISK CALCULATION ---
-    # Assuming standard 3% SL across the board based on your bot config
+    # --- NEW: Alpha Calculation ---
+    spy_return = get_market_benchmark()
+    daily_alpha = daily_pl_pct - spy_return
+    
+    # Value at Risk Calculation (Your existing code)
     total_var = sum([abs(float(p['market_value'])) * 0.03 for p in positions]) if positions else 0.0
     var_pct = (total_var / equity) * 100 if equity > 0 else 0.0
     
     col1.metric("Net Liquidity", f"${equity:,.2f}", f"{daily_pl_pct:.2f}%")
     col2.metric("Day P/L", f"${daily_pl_abs:,.2f}")
+    
+    # --- NEW: Alpha Metric ---
+    col_alpha.metric("Daily Alpha (vs SPY)", f"{daily_alpha:+.2f}%", f"SPY: {spy_return:+.2f}%", delta_color="normal")
+    
     col3.metric("Buying Power", f"${buying_power:,.2f}")
     col_var.metric("Open Risk (VaR)", f"${total_var:,.2f}", f"-{var_pct:.2f}% Eq", delta_color="inverse")
     
@@ -674,23 +721,68 @@ with tab1:
 
     st.divider()
 
-    # --- 3. MAIN COLUMNS ---
+# --- 3. MAIN COLUMNS ---
     c1, c2 = st.columns([3, 4])
     
     with c1:
-        st.subheader("🔭 Opportunity Watchlist")
-        if watchlist_data:
-            wl_df = pd.DataFrame(watchlist_data)
-            st.dataframe(wl_df, use_container_width=True, hide_index=True)
-        else:
-            st.caption("No high-confidence setups detected yet.")
+        # Combine into a single tabbed container to save vertical space
+        tab_wl, tab_log, tab_health = st.tabs(["🔭 Watchlist", "📝 Decisions", "🖥️ Risk & Telemetry"])
+        
+        with tab_wl:
+            if watchlist_data:
+                wl_df = pd.DataFrame(watchlist_data)
+                st.dataframe(wl_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No high-confidence setups detected yet.")
 
-        st.subheader("📝 Decision Log")
-        if parsed_signals:
-            sig_df = pd.DataFrame(list(parsed_signals.items()), columns=["Ticker", "Decision"])
-            st.dataframe(sig_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No signals parsed from recent logs.")
+        with tab_log:
+            if parsed_signals:
+                sig_df = pd.DataFrame(list(parsed_signals.items()), columns=["Ticker", "Decision"])
+                st.dataframe(sig_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No signals parsed from recent logs.")
+                
+        with tab_health:
+            st.markdown("#### Server & API Telemetry")
+            cpu, ram, ping = get_system_telemetry()
+            
+            t1, t2, t3 = st.columns(3)
+            t1.metric("CPU Load", f"{cpu}%", delta="High" if cpu > 80 else "Normal", delta_color="inverse")
+            t2.metric("RAM Util", f"{ram}%", delta="High" if ram > 85 else "Normal", delta_color="inverse")
+            t3.metric("API Latency", f"{ping}ms", delta="Lag" if ping > 300 else "Fast", delta_color="inverse")
+
+            st.divider()
+            
+            st.markdown("#### Margin Distance")
+            maint_margin = float(account.get('maintenance_margin', 0)) if account else 0.0
+            margin_util = (maint_margin / equity * 100) if equity > 0 else 0.0
+            st.progress(int(max(0, min(100, margin_util))), text=f"Margin Capacity Used: {margin_util:.1f}%")
+            if margin_util > 80:
+                st.error("⚠️ CRITICAL: Approaching Maintenance Margin Call!")
+
+            st.divider()
+
+            st.markdown("#### Active Position Correlation")
+            if positions and len(positions) > 1:
+                active_tickers = [p['symbol'] for p in positions]
+                corr_matrix = get_correlation_matrix(active_tickers)
+                
+                if corr_matrix is not None:
+                    fig_corr = px.imshow(
+                        corr_matrix, 
+                        text_auto=".2f", 
+                        color_continuous_scale="RdBu_r", 
+                        zmin=-1, zmax=1
+                    )
+                    fig_corr.update_layout(
+                        height=280, 
+                        margin=dict(l=0, r=0, t=10, b=0), 
+                        paper_bgcolor='rgba(0,0,0,0)', 
+                        font={'color': '#cccccc'}
+                    )
+                    st.plotly_chart(fig_corr, use_container_width=True)
+            else:
+                st.caption("Need at least 2 active positions to plot correlation.")
 
     with c2:
         st.subheader("💼 Capital & Active Portfolio")
@@ -887,9 +979,19 @@ with tab1:
                         if num > 0: return 'color: #ff4b4b' # Red for bad slippage
                         if num < 0: return 'color: #00ff41' # Green for price improvement
                     return ''
+                
+                # NEW: Color code the BUY/SELL side
+                def highlight_side(val):
+                    if val == 'BUY': return 'color: #00ff41; font-weight: bold;'
+                    if val == 'SELL': return 'color: #ff4b4b; font-weight: bold;'
+                    return ''
 
-                # Use .map() for modern Pandas formatting
-                st.dataframe(df_orders.style.map(highlight_slippage, subset=['Slippage']), width="stretch", hide_index=True)
+                # Chain the mappings together
+                styled_df = (df_orders.style
+                             .map(highlight_slippage, subset=['Slippage'])
+                             .map(highlight_side, subset=['Side']))
+
+                st.dataframe(styled_df, width="stretch", hide_index=True)
             else:
                 st.caption("No recent filled orders found.")
         else:
