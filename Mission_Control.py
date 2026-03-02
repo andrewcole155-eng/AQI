@@ -468,7 +468,6 @@ def calculate_3d_physics(df):
     return phys_df.dropna()
 
 def calculate_rolling_edge(df, window=30):
-    """Calculates 30-day rolling metrics to monitor current momentum and defense."""
     r_df = df.copy()
     r_df['daily_return'] = r_df['equity'].pct_change()
     
