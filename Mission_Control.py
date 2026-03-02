@@ -481,20 +481,27 @@ def calculate_rolling_edge(df, window=30):
     r_df['rolling_sharpe'] = (roll_mean / roll_std) * (252 ** 0.5)
     
     # --- DEFENSIVE METRICS ---
-    # 30-Day Rolling Drawdown (Drawdown from the highest peak in the last 30 days)
+    # 30-Day Rolling Drawdown
     rolling_peak = r_df['equity'].rolling(window=window, min_periods=1).max()
     r_df['rolling_dd'] = ((r_df['equity'] - rolling_peak) / rolling_peak) * 100
 
-    # 30-Day Rolling Sortino (Penalizes only downside volatility)
+    # 30-Day Rolling Sortino
     downside_returns = r_df['daily_return'].copy()
     downside_returns[downside_returns > 0] = 0
     roll_downside_std = downside_returns.rolling(window).std()
     
-    # Avoid division by zero
     r_df['rolling_sortino'] = r_df.apply(
         lambda row: 0.0 if roll_downside_std.loc[row.name] == 0 
         else (roll_mean.loc[row.name] / roll_downside_std.loc[row.name]) * (252 ** 0.5), axis=1
     )
+    
+    # --- CONSISTENCY & REGIME METRICS ---
+    # 30-Day Rolling Daily Win Rate (%)
+    r_df['is_win'] = (r_df['daily_return'] > 0).astype(int)
+    r_df['rolling_win_rate'] = r_df['is_win'].rolling(window=window).mean() * 100
+    
+    # 30-Day Rolling Volatility (Annualized %)
+    r_df['rolling_vol'] = roll_std * (252 ** 0.5) * 100
     
     return r_df.dropna(subset=['rolling_return', 'rolling_sharpe', 'rolling_dd'])
 
@@ -1191,21 +1198,22 @@ with tab3:
 
         # --- NEW SECTION: ROLLING EDGE ---
         st.divider()
-        st.markdown("### 🔄 30-Day Rolling Edge (Momentum & Defense)")
+        st.markdown("### 🔄 30-Day Rolling Edge (Momentum, Defense & Regime)")
         
         roll_df = calculate_rolling_edge(hist_df_adj, window=30)
         
         if not roll_df.empty:
-            # Create a 2x2 grid for Offensive and Defensive metrics
+            # Create a 3x2 grid
             c_roll1, c_roll2 = st.columns(2)
             c_roll3, c_roll4 = st.columns(2)
+            c_roll5, c_roll6 = st.columns(2)
             
             with c_roll1:
                 st.caption("30-Day Rolling Return (%)")
                 fig_roll_ret = px.area(roll_df, x='timestamp', y='rolling_return')
                 fig_roll_ret.update_traces(line_color='#569cd6', fillcolor='rgba(86, 156, 214, 0.2)')
                 fig_roll_ret.add_hline(y=0, line_dash="dash", line_color="white")
-                fig_roll_ret.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                fig_roll_ret.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_ret, use_container_width=True)
 
             with c_roll2:
@@ -1214,28 +1222,41 @@ with tab3:
                 fig_roll_shp.update_traces(line_color='#c586c0')
                 fig_roll_shp.add_hline(y=1.5, line_dash="dot", line_color="#00ff41", annotation_text="Elite Target")
                 fig_roll_shp.add_hline(y=0, line_dash="dash", line_color="#ff4b4b")
-                fig_roll_shp.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                fig_roll_shp.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_shp, use_container_width=True)
 
             with c_roll3:
                 st.caption("30-Day Rolling Max Drawdown (%)")
                 fig_roll_dd = px.area(roll_df, x='timestamp', y='rolling_dd')
-                # Styled red to match risk/defense visual language
                 fig_roll_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
-                # Set a pain threshold line (adjust -5.0 to whatever your strategy limits are)
                 fig_roll_dd.add_hline(y=-5.0, line_dash="dot", line_color="#ffb000", annotation_text="Pain Threshold")
-                fig_roll_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                fig_roll_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_dd, use_container_width=True)
 
             with c_roll4:
                 st.caption("30-Day Rolling Sortino Ratio")
                 fig_roll_srt = px.line(roll_df, x='timestamp', y='rolling_sortino')
-                # Styled in yellow to differentiate from Sharpe
                 fig_roll_srt.update_traces(line_color='#cca700') 
                 fig_roll_srt.add_hline(y=2.0, line_dash="dot", line_color="#00ff41", annotation_text="Elite Target")
                 fig_roll_srt.add_hline(y=0, line_dash="dash", line_color="#ff4b4b")
-                fig_roll_srt.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                fig_roll_srt.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_srt, use_container_width=True)
+                
+            with c_roll5:
+                st.caption("30-Day Rolling Daily Win Rate (%)")
+                # Using a bar chart to represent daily consistency
+                fig_roll_win = px.bar(roll_df, x='timestamp', y='rolling_win_rate')
+                fig_roll_win.update_traces(marker_color='#4CAF50', opacity=0.7)
+                fig_roll_win.add_hline(y=50.0, line_dash="dash", line_color="#ffb000", annotation_text="Breakeven 50%")
+                fig_roll_win.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None, yaxis=dict(range=[0, 100]))
+                st.plotly_chart(fig_roll_win, use_container_width=True)
+
+            with c_roll6:
+                st.caption("30-Day Rolling Volatility (Annualized %)")
+                fig_roll_vol = px.line(roll_df, x='timestamp', y='rolling_vol')
+                fig_roll_vol.update_traces(line_color='#ff9800')
+                fig_roll_vol.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_vol, use_container_width=True)
         else:
             st.caption("Not enough data yet for 30-Day Rolling metrics.")
 
