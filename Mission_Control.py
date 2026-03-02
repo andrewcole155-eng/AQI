@@ -466,36 +466,37 @@ def calculate_3d_physics(df):
     phys_df['jerk_smooth'] = phys_df['jerk'].rolling(3).mean()
     
     return phys_df.dropna()
-
+    
 def calculate_rolling_edge(df, window=30):
-    r_df = df.copy()
-    r_df['daily_return'] = r_df['equity'].pct_change()
-    
-    # --- OFFENSIVE METRICS ---
-    # 30-Day Return
-    r_df['rolling_return'] = r_df['equity'].pct_change(periods=window) * 100
-    
-    # 30-Day Sharpe
-    roll_mean = r_df['daily_return'].rolling(window).mean()
-    roll_std = r_df['daily_return'].rolling(window).std()
-    r_df['rolling_sharpe'] = (roll_mean / roll_std) * (252 ** 0.5)
-    
-    # --- DEFENSIVE METRICS ---
-    # 30-Day Rolling Drawdown (Drawdown from the highest peak in the last 30 days)
-    rolling_peak = r_df['equity'].rolling(window=window, min_periods=1).max()
-    r_df['rolling_dd'] = ((r_df['equity'] - rolling_peak) / rolling_peak) * 100
+    r_df = df.copy()
+    r_df['daily_return'] = r_df['equity'].pct_change()
+    
+    # --- OFFENSIVE METRICS ---
+    # 30-Day Return
+    r_df['rolling_return'] = r_df['equity'].pct_change(periods=window) * 100
+    
+    # 30-Day Sharpe
+    roll_mean = r_df['daily_return'].rolling(window).mean()
+    roll_std = r_df['daily_return'].rolling(window).std()
+    r_df['rolling_sharpe'] = (roll_mean / roll_std) * (252 ** 0.5)
+    
+    # --- DEFENSIVE METRICS ---
+    # 30-Day Rolling Drawdown (Drawdown from the highest peak in the last 30 days)
+    rolling_peak = r_df['equity'].rolling(window=window, min_periods=1).max()
+    r_df['rolling_dd'] = ((r_df['equity'] - rolling_peak) / rolling_peak) * 100
 
-    # 30-Day Rolling Sortino (Penalizes only downside volatility)
-    downside_returns = r_df['daily_return'].copy()
-    downside_returns[downside_returns > 0] = 0
-    roll_downside_std = downside_returns.rolling(window).std()
-    # Avoid division by zero
-    r_df['rolling_sortino'] = r_df.apply(
-        lambda row: (row['daily_return'] / row['daily_return']) * 0 if roll_downside_std.loc[row.name] == 0 
-        else (roll_mean.loc[row.name] / roll_downside_std.loc[row.name]) * (252 ** 0.5), axis=1
-    )
-    
-    return r_df.dropna(subset=['rolling_return', 'rolling_sharpe', 'rolling_dd'])
+    # 30-Day Rolling Sortino (Penalizes only downside volatility)
+    downside_returns = r_df['daily_return'].copy()
+    downside_returns[downside_returns > 0] = 0
+    roll_downside_std = downside_returns.rolling(window).std()
+    
+    # Avoid division by zero
+    r_df['rolling_sortino'] = r_df.apply(
+        lambda row: 0.0 if roll_downside_std.loc[row.name] == 0 
+        else (roll_mean.loc[row.name] / roll_downside_std.loc[row.name]) * (252 ** 0.5), axis=1
+    )
+    
+    return r_df.dropna(subset=['rolling_return', 'rolling_sharpe', 'rolling_dd'])
 
 def format_log_line(line):
     """Formats a single log line to look like VS Code syntax highlighting."""
