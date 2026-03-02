@@ -468,19 +468,35 @@ def calculate_3d_physics(df):
     return phys_df.dropna()
 
 def calculate_rolling_edge(df, window=30):
-    """Calculates 30-day rolling return and Sharpe to monitor current momentum."""
-    r_df = df.copy()
-    r_df['daily_return'] = r_df['equity'].pct_change()
-    
-    # 30-Day Return
-    r_df['rolling_return'] = r_df['equity'].pct_change(periods=window) * 100
-    
-    # 30-Day Sharpe
-    roll_mean = r_df['daily_return'].rolling(window).mean()
-    roll_std = r_df['daily_return'].rolling(window).std()
-    r_df['rolling_sharpe'] = (roll_mean / roll_std) * (252 ** 0.5)
-    
-    return r_df.dropna(subset=['rolling_return', 'rolling_sharpe'])
+    """Calculates 30-day rolling metrics to monitor current momentum and defense."""
+    r_df = df.copy()
+    r_df['daily_return'] = r_df['equity'].pct_change()
+    
+    # --- OFFENSIVE METRICS ---
+    # 30-Day Return
+    r_df['rolling_return'] = r_df['equity'].pct_change(periods=window) * 100
+    
+    # 30-Day Sharpe
+    roll_mean = r_df['daily_return'].rolling(window).mean()
+    roll_std = r_df['daily_return'].rolling(window).std()
+    r_df['rolling_sharpe'] = (roll_mean / roll_std) * (252 ** 0.5)
+    
+    # --- DEFENSIVE METRICS ---
+    # 30-Day Rolling Drawdown (Drawdown from the highest peak in the last 30 days)
+    rolling_peak = r_df['equity'].rolling(window=window, min_periods=1).max()
+    r_df['rolling_dd'] = ((r_df['equity'] - rolling_peak) / rolling_peak) * 100
+
+    # 30-Day Rolling Sortino (Penalizes only downside volatility)
+    downside_returns = r_df['daily_return'].copy()
+    downside_returns[downside_returns > 0] = 0
+    roll_downside_std = downside_returns.rolling(window).std()
+    # Avoid division by zero
+    r_df['rolling_sortino'] = r_df.apply(
+        lambda row: (row['daily_return'] / row['daily_return']) * 0 if roll_downside_std.loc[row.name] == 0 
+        else (roll_mean.loc[row.name] / roll_downside_std.loc[row.name]) * (252 ** 0.5), axis=1
+    )
+    
+    return r_df.dropna(subset=['rolling_return', 'rolling_sharpe', 'rolling_dd'])
 
 def format_log_line(line):
     """Formats a single log line to look like VS Code syntax highlighting."""
@@ -656,7 +672,7 @@ with tab1:
     sc2.metric("💵 Dry Powder", f"${cash_capital:,.2f}", f"{cash_pct:.1f}% Cash", delta_color="off")
     
     # FIX: Hardcoded the ticker list so it doesn't look for the missing 'config' variable
-    monitored_tickers = ['IONQ', 'KR', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL','FCX']
+    monitored_tickers = ['IONQ', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL','FCX']
     sc3.metric("🤖 Active Agents", f"{len(positions)} / {len(monitored_tickers)}")
 
     # --- ADDED: NEURAL SKEW / MACRO BIAS ---
@@ -808,7 +824,7 @@ with tab1:
             st.plotly_chart(fig_alloc, use_container_width=True)
             
             # --- ADDED: NEXT SLOT DEPLOYMENT ESTIMATE ---
-            monitored_tickers = ['IONQ', 'KR', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL', 'FCX']
+            monitored_tickers = ['IONQ', 'KO', 'OXY', 'BAC', 'GM', 'PFE', 'PYPL', 'FCX']
             est_slot_size = equity / len(monitored_tickers)
             st.caption(f"🤖 **Bot Pre-Auth:** Estimated next trade size is **~${est_slot_size:,.2f}** per signal.")
             
@@ -1174,34 +1190,54 @@ with tab3:
             st.caption("*Note: Displays active state. Full historical attribution requires database integration.*")
 
         # --- NEW SECTION: ROLLING EDGE ---
-        st.divider()
-        st.markdown("### 🔄 30-Day Rolling Edge (Current Momentum)")
-        
-        roll_df = calculate_rolling_edge(hist_df_adj, window=30)
-        
-        if not roll_df.empty:
-            c_roll1, c_roll2 = st.columns(2)
-            
-            with c_roll1:
-                st.caption("30-Day Rolling Return (%)")
-                fig_roll_ret = px.area(roll_df, x='timestamp', y='rolling_return')
-                # Color green if positive, red if negative
-                fig_roll_ret.update_traces(line_color='#569cd6', fillcolor='rgba(86, 156, 214, 0.2)')
-                fig_roll_ret.add_hline(y=0, line_dash="dash", line_color="white")
-                fig_roll_ret.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
-                st.plotly_chart(fig_roll_ret, use_container_width=True)
+        st.divider()
+        st.markdown("### 🔄 30-Day Rolling Edge (Momentum & Defense)")
+        
+        roll_df = calculate_rolling_edge(hist_df_adj, window=30)
+        
+        if not roll_df.empty:
+            # Create a 2x2 grid for Offensive and Defensive metrics
+            c_roll1, c_roll2 = st.columns(2)
+            c_roll3, c_roll4 = st.columns(2)
+            
+            with c_roll1:
+                st.caption("30-Day Rolling Return (%)")
+                fig_roll_ret = px.area(roll_df, x='timestamp', y='rolling_return')
+                fig_roll_ret.update_traces(line_color='#569cd6', fillcolor='rgba(86, 156, 214, 0.2)')
+                fig_roll_ret.add_hline(y=0, line_dash="dash", line_color="white")
+                fig_roll_ret.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_ret, use_container_width=True)
 
-            with c_roll2:
-                st.caption("30-Day Rolling Sharpe Ratio")
-                fig_roll_shp = px.line(roll_df, x='timestamp', y='rolling_sharpe')
-                fig_roll_shp.update_traces(line_color='#c586c0')
-                # Institutional benchmark line at 1.5
-                fig_roll_shp.add_hline(y=1.5, line_dash="dot", line_color="#00ff41", annotation_text="Elite Target")
-                fig_roll_shp.add_hline(y=0, line_dash="dash", line_color="#ff4b4b")
-                fig_roll_shp.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
-                st.plotly_chart(fig_roll_shp, use_container_width=True)
-        else:
-            st.caption("Not enough data yet for 30-Day Rolling metrics.")
+            with c_roll2:
+                st.caption("30-Day Rolling Sharpe Ratio")
+                fig_roll_shp = px.line(roll_df, x='timestamp', y='rolling_sharpe')
+                fig_roll_shp.update_traces(line_color='#c586c0')
+                fig_roll_shp.add_hline(y=1.5, line_dash="dot", line_color="#00ff41", annotation_text="Elite Target")
+                fig_roll_shp.add_hline(y=0, line_dash="dash", line_color="#ff4b4b")
+                fig_roll_shp.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_shp, use_container_width=True)
+
+            with c_roll3:
+                st.caption("30-Day Rolling Max Drawdown (%)")
+                fig_roll_dd = px.area(roll_df, x='timestamp', y='rolling_dd')
+                # Styled red to match risk/defense visual language
+                fig_roll_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
+                # Set a pain threshold line (adjust -5.0 to whatever your strategy limits are)
+                fig_roll_dd.add_hline(y=-5.0, line_dash="dot", line_color="#ffb000", annotation_text="Pain Threshold")
+                fig_roll_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_dd, use_container_width=True)
+
+            with c_roll4:
+                st.caption("30-Day Rolling Sortino Ratio")
+                fig_roll_srt = px.line(roll_df, x='timestamp', y='rolling_sortino')
+                # Styled in yellow to differentiate from Sharpe
+                fig_roll_srt.update_traces(line_color='#cca700') 
+                fig_roll_srt.add_hline(y=2.0, line_dash="dot", line_color="#00ff41", annotation_text="Elite Target")
+                fig_roll_srt.add_hline(y=0, line_dash="dash", line_color="#ff4b4b")
+                fig_roll_srt.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=250, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_srt, use_container_width=True)
+        else:
+            st.caption("Not enough data yet for 30-Day Rolling metrics.")
 
         # --- SECTION 3: TIME INTELLIGENCE ---
         st.divider()
