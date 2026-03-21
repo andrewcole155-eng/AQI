@@ -1067,6 +1067,7 @@ with tab3:
         hist_df_adj = apply_deposit(hist_df_adj, "2026-02-26", 69.71)
         hist_df_adj = apply_deposit(hist_df_adj, "2026-03-04", 68.84)
         hist_df_adj = apply_deposit(hist_df_adj, "2026-03-13", 69.61)
+        hist_df_adj = apply_deposit(hist_df_adj, "2026-03-21", 69.01)        
 
         # ==========================================================
         
