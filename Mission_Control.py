@@ -1520,9 +1520,6 @@ with tab3:
                 fig_roll_ulcer.add_hline(y=5.0, line_dash="dot", line_color="#ffb000", annotation_text="Stress Warning") 
                 fig_roll_ulcer.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_ulcer, use_container_width=True)
-                
-        else:
-            st.caption("Not enough data yet for Rolling metrics.")
 
         else:
             st.caption("Not enough data yet for 30-Day Rolling metrics.")
