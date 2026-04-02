@@ -963,10 +963,6 @@ with tab1:
             ulcer_val = global_metrics.get('Ulcer Index', 0)
             
             e1, e2 = st.columns(2)
-            e1.metric("System Quality No. (SQN)", f"{sqn_val:.2f}", delta="Robust" if sqn_val > 1.5 else "Weak", delta_color="normal")
-            e2.metric("Ulcer Index (Pain)", f"{ulcer_val:.2f}", delta="Safe" if ulcer_val < 5.0 else "Stressful", delta_color="inverse")
-                        
-            st.divider()
             st.markdown("#### 🎯 Excursion Analysis (MAE vs MFE)")
             st.caption("Scatter plot of recent closed trades. Identifies if stops are too tight or winners are choked.")
             
