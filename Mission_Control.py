@@ -774,7 +774,9 @@ if isinstance(orders, list):
             except Exception:
                 pass
 
-# 2. MAIN CONTENT TABS
+# =====================================================================
+# 2. MAIN TABS
+# =====================================================================
 tab1, tab2, tab3 = st.tabs(["🧠 Bot Logic & Positions", "📜 Raw Logs", "📈 Performance"])
 
 with tab1:
@@ -946,13 +948,16 @@ with tab1:
         with tab_edge:
             st.markdown("#### ⚖️ Edge Quality")
             
-            # Fetch from previously calculated metrics
-            sqn_val = metrics.get('SQN', 0)
-            ulcer_val = metrics.get('Ulcer Index', 0)
+            # Use session_state to prevent NameError on first load
+            global_metrics = st.session_state.get('global_metrics', {})
+            sqn_val = global_metrics.get('SQN', 0)
+            ulcer_val = global_metrics.get('Ulcer Index', 0)
             
             e1, e2 = st.columns(2)
             e1.metric("System Quality No. (SQN)", f"{sqn_val:.2f}", delta="Robust" if sqn_val > 1.5 else "Weak", delta_color="normal")
             e2.metric("Ulcer Index (Pain)", f"{ulcer_val:.2f}", delta="Safe" if ulcer_val < 5.0 else "Stressful", delta_color="inverse")
+            
+            # ... (the rest of the tab_edge code continues below) ...
             
             st.divider()
             st.markdown("#### 🎯 Excursion Analysis (MAE vs MFE)")
@@ -1260,7 +1265,8 @@ with tab2:
 with tab3:
     # 1. Get History
     hist_df_raw = get_portfolio_history(api)
-    
+    metrics = {} # Default empty dict in case of API failure
+
     if not hist_df_raw.empty and account:
         current_equity_raw = float(account['equity'])
 
@@ -1295,13 +1301,14 @@ with tab3:
         hist_df_adj = apply_deposit(hist_df_adj, "2026-03-04", 68.84)
         hist_df_adj = apply_deposit(hist_df_adj, "2026-03-13", 69.61)
         hist_df_adj = apply_deposit(hist_df_adj, "2026-03-21", 69.01)        
-
-        # ==========================================================
         
         # --- CALCULATIONS ---
         
         # A. METRICS: Use ADJUSTED Data (Honest Strategy Score)
-        metrics = calculate_advanced_metrics(hist_df_adj)
+        # Note: We assign it to st.session_state so Tab1 can read it on the NEXT refresh loop
+        st.session_state['global_metrics'] = calculate_advanced_metrics(hist_df_adj)
+        metrics = st.session_state['global_metrics']
+        
         scorecard_df = create_scorecard_df(metrics)
         inst_score = calculate_institutional_score(metrics)
         
