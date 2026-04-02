@@ -607,20 +607,25 @@ def calculate_rolling_edge(df, window=30):
     r_df['daily_return'] = r_df['equity'].pct_change()
     
     # --- OFFENSIVE METRICS ---
-    # 30-Day Return
+    # Rolling Return
     r_df['rolling_return'] = r_df['equity'].pct_change(periods=window) * 100
     
-    # 30-Day Sharpe
+    # Rolling Sharpe
     roll_mean = r_df['daily_return'].rolling(window).mean()
     roll_std = r_df['daily_return'].rolling(window).std()
     r_df['rolling_sharpe'] = (roll_mean / roll_std) * (252 ** 0.5)
     
     # --- DEFENSIVE METRICS ---
-    # 30-Day Rolling Drawdown
+    # Rolling Drawdown
     rolling_peak = r_df['equity'].rolling(window=window, min_periods=1).max()
-    r_df['rolling_dd'] = ((r_df['equity'] - rolling_peak) / rolling_peak) * 100
+    r_df['rolling_dd_raw'] = (r_df['equity'] - rolling_peak) / rolling_peak
+    r_df['rolling_dd'] = r_df['rolling_dd_raw'] * 100
 
-    # 30-Day Rolling Sortino
+    # NEW: Rolling Ulcer Index (Quadratic Mean of Drawdowns)
+    r_df['rolling_dd_sq'] = r_df['rolling_dd_raw'] ** 2
+    r_df['rolling_ulcer'] = (r_df['rolling_dd_sq'].rolling(window).mean()) ** 0.5 * 100
+
+    # Rolling Sortino
     downside_returns = r_df['daily_return'].copy()
     downside_returns[downside_returns > 0] = 0
     roll_downside_std = downside_returns.rolling(window).std()
@@ -631,12 +636,16 @@ def calculate_rolling_edge(df, window=30):
     )
     
     # --- CONSISTENCY & REGIME METRICS ---
-    # 30-Day Rolling Daily Win Rate (%)
+    # Rolling Win Rate (%)
     r_df['is_win'] = (r_df['daily_return'] > 0).astype(int)
     r_df['rolling_win_rate'] = r_df['is_win'].rolling(window=window).mean() * 100
     
-    # 30-Day Rolling Volatility (Annualized %)
+    # Rolling Volatility
     r_df['rolling_vol'] = roll_std * (252 ** 0.5) * 100
+    
+    # NEW: Rolling SQN (Using active days as a proxy for trade count)
+    r_df['rolling_active_days'] = (r_df['daily_return'] != 0).rolling(window).sum()
+    r_df['rolling_sqn'] = (r_df['rolling_active_days'] ** 0.5) * (roll_mean / roll_std)
     
     return r_df.dropna(subset=['rolling_return', 'rolling_sharpe', 'rolling_dd'])
 
@@ -954,11 +963,9 @@ with tab1:
             ulcer_val = global_metrics.get('Ulcer Index', 0)
             
             e1, e2 = st.columns(2)
-            e1.metric("System Quality No. (SQN)", f"{sqn_val:.2f}", delta="Robust" if sqn_val > 1.5 else "Weak", delta_color="normal")
-            e2.metric("Ulcer Index (Pain)", f"{ulcer_val:.2f}", delta="Safe" if ulcer_val < 5.0 else "Stressful", delta_color="inverse")
-            
-            # ... (the rest of the tab_edge code continues below) ...
-            
+#            e1.metric("System Quality No. (SQN)", f"{sqn_val:.2f}", delta="Robust" if sqn_val > 1.5 else "Weak", delta_color="normal")
+#            e2.metric("Ulcer Index (Pain)", f"{ulcer_val:.2f}", delta="Safe" if ulcer_val < 5.0 else "Stressful", delta_color="inverse")
+                        
             st.divider()
             st.markdown("#### 🎯 Excursion Analysis (MAE vs MFE)")
             st.caption("Scatter plot of recent closed trades. Identifies if stops are too tight or winners are choked.")
@@ -1444,7 +1451,8 @@ with tab3:
             c_roll1, c_roll2 = st.columns(2)
             c_roll3, c_roll4 = st.columns(2)
             c_roll5, c_roll6 = st.columns(2)
-            
+            c_roll7, c_roll8 = st.columns(2)
+
             with c_roll1:
                 st.caption("30-Day Rolling Return (%)")
                 fig_roll_ret = px.area(roll_df, x='timestamp', y='rolling_return')
@@ -1494,6 +1502,28 @@ with tab3:
                 fig_roll_vol.update_traces(line_color='#ff9800')
                 fig_roll_vol.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_vol, use_container_width=True)
+
+            with c_roll7:
+                st.caption("30-Day Rolling SQN (System Quality)")
+                fig_roll_sqn = px.line(roll_df, x='timestamp', y='rolling_sqn')
+                fig_roll_sqn.update_traces(line_color='#00ff41')
+                fig_roll_sqn.add_hline(y=2.0, line_dash="dot", line_color="#ffb000", annotation_text="Professional Target")
+                fig_roll_sqn.add_hline(y=1.0, line_dash="dash", line_color="#ff4b4b")
+                fig_roll_sqn.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_sqn, use_container_width=True)
+
+            with c_roll8:
+                st.caption("30-Day Rolling Ulcer Index (Pain)")
+                fig_roll_ulcer = px.area(roll_df, x='timestamp', y='rolling_ulcer')
+                fig_roll_ulcer.update_traces(line_color='#e91e63', fillcolor='rgba(233, 30, 99, 0.2)')
+                # Lower is better for Ulcer. Usually anything under 5.0 is incredibly safe.
+                fig_roll_ulcer.add_hline(y=5.0, line_dash="dot", line_color="#ffb000", annotation_text="Stress Warning") 
+                fig_roll_ulcer.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_roll_ulcer, use_container_width=True)
+                
+        else:
+            st.caption("Not enough data yet for Rolling metrics.")
+
         else:
             st.caption("Not enough data yet for 30-Day Rolling metrics.")
 
