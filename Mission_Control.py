@@ -1436,14 +1436,14 @@ with tab3:
             c_ls2.metric("🔴 Short Win Rate (Active)", f"{short_wr:.1f}%", f"{total_shorts} positions", delta_color="off")
             st.caption("*Note: Displays active state. Full historical attribution requires database integration.*")
 
-        # --- NEW SECTION: ROLLING EDGE ---
+# --- NEW SECTION: ROLLING EDGE ---
         st.divider()
         st.markdown("### 🔄 30-Day Rolling Edge (Momentum, Defense & Regime)")
         
         roll_df = calculate_rolling_edge(hist_df_adj, window=30)
         
         if not roll_df.empty:
-            # Create a 3x2 grid
+            # Create a 3x2 grid (Updated to 4x2 based on your code structure)
             c_roll1, c_roll2 = st.columns(2)
             c_roll3, c_roll4 = st.columns(2)
             c_roll5, c_roll6 = st.columns(2)
@@ -1453,7 +1453,9 @@ with tab3:
                 st.caption("30-Day Rolling Return (%)")
                 fig_roll_ret = px.area(roll_df, x='timestamp', y='rolling_return')
                 fig_roll_ret.update_traces(line_color='#569cd6', fillcolor='rgba(86, 156, 214, 0.2)')
-                fig_roll_ret.add_hline(y=0, line_dash="dash", line_color="white")
+                fig_roll_ret.add_hline(y=2.0, line_dash="dot", line_color="#00ff41", annotation_text="Pro Target")
+                fig_roll_ret.add_hline(y=0, line_dash="dash", line_color="white", annotation_text="Breakeven")
+                fig_roll_ret.add_hline(y=-2.0, line_dash="dot", line_color="#ff4b4b", annotation_text="Pain Threshold")
                 fig_roll_ret.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_ret, use_container_width=True)
 
@@ -1461,8 +1463,8 @@ with tab3:
                 st.caption("30-Day Rolling Sharpe Ratio")
                 fig_roll_shp = px.line(roll_df, x='timestamp', y='rolling_sharpe')
                 fig_roll_shp.update_traces(line_color='#c586c0')
-                fig_roll_shp.add_hline(y=1.5, line_dash="dot", line_color="#00ff41", annotation_text="Elite Target")
-                fig_roll_shp.add_hline(y=0, line_dash="dash", line_color="#ff4b4b")
+                fig_roll_shp.add_hline(y=1.5, line_dash="dot", line_color="#00ff41", annotation_text="Pro Target")
+                fig_roll_shp.add_hline(y=0.0, line_dash="dot", line_color="#ff4b4b", annotation_text="Stress Warning")
                 fig_roll_shp.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_shp, use_container_width=True)
 
@@ -1470,6 +1472,7 @@ with tab3:
                 st.caption("30-Day Rolling Max Drawdown (%)")
                 fig_roll_dd = px.area(roll_df, x='timestamp', y='rolling_dd')
                 fig_roll_dd.update_traces(line_color='#ff4b4b', fillcolor='rgba(255, 75, 75, 0.2)')
+                fig_roll_dd.add_hline(y=-2.0, line_dash="dot", line_color="#00ff41", annotation_text="Pro Limit")
                 fig_roll_dd.add_hline(y=-5.0, line_dash="dot", line_color="#ffb000", annotation_text="Pain Threshold")
                 fig_roll_dd.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_dd, use_container_width=True)
@@ -1478,17 +1481,18 @@ with tab3:
                 st.caption("30-Day Rolling Sortino Ratio")
                 fig_roll_srt = px.line(roll_df, x='timestamp', y='rolling_sortino')
                 fig_roll_srt.update_traces(line_color='#cca700') 
-                fig_roll_srt.add_hline(y=2.0, line_dash="dot", line_color="#00ff41", annotation_text="Elite Target")
-                fig_roll_srt.add_hline(y=0, line_dash="dash", line_color="#ff4b4b")
+                fig_roll_srt.add_hline(y=2.0, line_dash="dot", line_color="#00ff41", annotation_text="Pro Target")
+                fig_roll_srt.add_hline(y=0.0, line_dash="dot", line_color="#ff4b4b", annotation_text="Stress Warning")
                 fig_roll_srt.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_srt, use_container_width=True)
                 
             with c_roll5:
                 st.caption("30-Day Rolling Daily Win Rate (%)")
-                # Using a bar chart to represent daily consistency
                 fig_roll_win = px.bar(roll_df, x='timestamp', y='rolling_win_rate')
                 fig_roll_win.update_traces(marker_color='#4CAF50', opacity=0.7)
-                fig_roll_win.add_hline(y=50.0, line_dash="dash", line_color="#ffb000", annotation_text="Breakeven 50%")
+                fig_roll_win.add_hline(y=60.0, line_dash="dot", line_color="#00ff41", annotation_text="Pro Target")
+                fig_roll_win.add_hline(y=50.0, line_dash="dash", line_color="white", annotation_text="Breakeven")
+                fig_roll_win.add_hline(y=45.0, line_dash="dot", line_color="#ff4b4b", annotation_text="Pain Threshold")
                 fig_roll_win.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None, yaxis=dict(range=[0, 100]))
                 st.plotly_chart(fig_roll_win, use_container_width=True)
 
@@ -1496,6 +1500,8 @@ with tab3:
                 st.caption("30-Day Rolling Volatility (Annualized %)")
                 fig_roll_vol = px.line(roll_df, x='timestamp', y='rolling_vol')
                 fig_roll_vol.update_traces(line_color='#ff9800')
+                fig_roll_vol.add_hline(y=15.0, line_dash="dot", line_color="#00ff41", annotation_text="Pro Target")
+                fig_roll_vol.add_hline(y=25.0, line_dash="dot", line_color="#ffb000", annotation_text="Stress Warning")
                 fig_roll_vol.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_vol, use_container_width=True)
 
@@ -1503,8 +1509,8 @@ with tab3:
                 st.caption("30-Day Rolling SQN (System Quality)")
                 fig_roll_sqn = px.line(roll_df, x='timestamp', y='rolling_sqn')
                 fig_roll_sqn.update_traces(line_color='#00ff41')
-                fig_roll_sqn.add_hline(y=2.0, line_dash="dot", line_color="#ffb000", annotation_text="Professional Target")
-                fig_roll_sqn.add_hline(y=1.0, line_dash="dash", line_color="#ff4b4b")
+                fig_roll_sqn.add_hline(y=2.0, line_dash="dot", line_color="#00ff41", annotation_text="Pro Target")
+                fig_roll_sqn.add_hline(y=1.0, line_dash="dot", line_color="#ff4b4b", annotation_text="Stress Warning")
                 fig_roll_sqn.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_sqn, use_container_width=True)
 
@@ -1512,11 +1518,11 @@ with tab3:
                 st.caption("30-Day Rolling Ulcer Index (Pain)")
                 fig_roll_ulcer = px.area(roll_df, x='timestamp', y='rolling_ulcer')
                 fig_roll_ulcer.update_traces(line_color='#e91e63', fillcolor='rgba(233, 30, 99, 0.2)')
-                # Lower is better for Ulcer. Usually anything under 5.0 is incredibly safe.
+                fig_roll_ulcer.add_hline(y=2.0, line_dash="dot", line_color="#00ff41", annotation_text="Pro Target") 
                 fig_roll_ulcer.add_hline(y=5.0, line_dash="dot", line_color="#ffb000", annotation_text="Stress Warning") 
                 fig_roll_ulcer.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=220, xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_roll_ulcer, use_container_width=True)
-
+                
         else:
             st.caption("Not enough data yet for 30-Day Rolling metrics.")
 
