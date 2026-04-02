@@ -208,6 +208,103 @@ def get_market_benchmark():
         return 0.0
 
 @st.cache_data(ttl=3600)
+def get_trade_excursions(_api, orders):
+    """
+    Parses recent filled orders to find closed 'round-trip' trades.
+    Fetches historical data to calculate MAE (Max Adverse Excursion) 
+    and MFE (Max Favorable Excursion) for stop-loss optimization.
+    """
+    if not orders: return pd.DataFrame()
+    
+    trades = []
+    # Sort oldest to newest to build the trade timeline
+    filled_orders = sorted([o for o in orders if isinstance(o, dict) and o.get('status') == 'filled'], 
+                           key=lambda x: x.get('filled_at', ''))
+    
+    # Lightweight FIFO matcher
+    inventory = {}
+    for o in filled_orders:
+        sym = o.get('symbol')
+        side = o.get('side')
+        qty = float(o.get('filled_qty', 0))
+        price = float(o.get('filled_avg_price', 0))
+        
+        try:
+            t = pd.to_datetime(o.get('filled_at')).tz_convert('UTC')
+        except:
+            continue
+            
+        if sym not in inventory:
+            inventory[sym] = {'qty': 0, 'cost': 0, 'entry_time': t, 'side': None}
+            
+        inv = inventory[sym]
+        
+        # Open new position
+        if inv['qty'] == 0:
+            inv['side'] = side
+            inv['cost'] = price
+            inv['entry_time'] = t
+            inv['qty'] += qty
+        else:
+            # Add to existing position
+            if inv['side'] == side:
+                inv['cost'] = ((inv['cost'] * inv['qty']) + (price * qty)) / (inv['qty'] + qty)
+                inv['qty'] += qty
+            # Close/Reduce position -> THIS IS A COMPLETED TRADE
+            else:
+                closed_qty = min(inv['qty'], qty)
+                inv['qty'] -= closed_qty
+                
+                if closed_qty > 0:
+                    trades.append({
+                        'Ticker': sym,
+                        'Type': 'Long' if inv['side'] == 'buy' else 'Short',
+                        'Entry_Time': inv['entry_time'],
+                        'Exit_Time': t,
+                        'Entry_Price': inv['cost'],
+                        'Exit_Price': price,
+                    })
+                if inv['qty'] == 0:
+                    inv['side'] = None
+
+    # Fetch highs/lows for the last 25 closed trades to avoid API limits
+    recent_trades = trades[-25:]
+    excursion_data = []
+    
+    for t in recent_trades:
+        start_str = t['Entry_Time'].strftime('%Y-%m-%d')
+        end_str = (t['Exit_Time'] + timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        try:
+            # Suppress output so it doesn't print to terminal
+            df = yf.download(t['Ticker'], start=start_str, end=end_str, progress=False)
+            if not df.empty:
+                # Use .values to safely extract scalar max/min regardless of yfinance multi-index formats
+                trade_high = float(df['High'].values.max())
+                trade_low = float(df['Low'].values.min())
+                entry = t['Entry_Price']
+                exit_p = t['Exit_Price']
+                
+                if t['Type'] == 'Long':
+                    mfe = (trade_high - entry) / entry * 100
+                    mae = (entry - trade_low) / entry * 100 # Keep positive for plotting scale
+                    pnl = (exit_p - entry) / entry * 100
+                else:
+                    mfe = (entry - trade_low) / entry * 100
+                    mae = (trade_high - entry) / entry * 100
+                    pnl = (entry - exit_p) / entry * 100
+                    
+                t['MFE (%)'] = mfe
+                t['MAE (%)'] = -mae # Convert to negative for the X-axis mapping
+                t['PnL (%)'] = pnl
+                t['Result'] = 'Win' if pnl > 0 else 'Loss'
+                excursion_data.append(t)
+        except Exception:
+            continue
+            
+    return pd.DataFrame(excursion_data)
+
+@st.cache_data(ttl=3600)
 def get_correlation_matrix(tickers):
     """Generates a 30-day correlation matrix for active positions."""
     if not tickers or len(tickers) < 2: return None
@@ -289,7 +386,7 @@ def calculate_seasonality(df):
     return day_stats, monthly_stats
 
 def calculate_advanced_metrics(hist_df):
-    """Calculates strict Portfolio Metrics."""
+    """Calculates strict Portfolio Metrics including advanced Institutional metrics."""
     if hist_df.empty: return {}
     
     df = hist_df.copy()
@@ -325,12 +422,25 @@ def calculate_advanced_metrics(hist_df):
     downside_std = df[df['daily_return'] < 0]['daily_return'].std()
     sortino = (mean_ret / downside_std) * (252 ** 0.5) if downside_std > 0 else 0
 
-    # --- NEW: Recovery Time ---
-    # We pass df to calculate_drawdown first to get the 'underwater_days' column
+    # --- 2. ADVANCED RISK (PAIN & REGIME) ---
+    # We pass df to calculate_drawdown first to get the 'underwater_days' and 'drawdown' columns
     df_with_dd = calculate_drawdown(df)
     max_underwater_days = int(df_with_dd['underwater_days'].max()) if 'underwater_days' in df_with_dd.columns else 0
+    
+    # Ulcer Index (Quadratic Mean of Drawdowns)
+    # Measures the depth and duration of drawdowns
+    ulcer_index = (df_with_dd['drawdown'] ** 2).mean() ** 0.5 if 'drawdown' in df_with_dd.columns else 0
 
-    # --- 2. PROFITABILITY ---
+    # Information Ratio (Consistency of Alpha vs Benchmark)
+    # Requires 'benchmark_return' column (e.g., SPY daily returns) to be merged into hist_df before passing
+    if 'benchmark_return' in df.columns:
+        active_return = df['daily_return'] - df['benchmark_return']
+        tracking_error = active_return.std()
+        information_ratio = (active_return.mean() / tracking_error) * (252 ** 0.5) if tracking_error > 0 else 0
+    else:
+        information_ratio = 0.0
+
+    # --- 3. PROFITABILITY & QUALITY ---
     df['diff'] = df['equity'].diff()
     gross_profit = df[df['diff'] > 0]['diff'].sum()
     gross_loss = abs(df[df['diff'] < 0]['diff'].sum())
@@ -340,16 +450,41 @@ def calculate_advanced_metrics(hist_df):
     wins = len(df[df['diff'] > 0])
     total_active = len(df[df['diff'] != 0])
     win_rate = (wins / total_active) if total_active > 0 else 0
+    
+    # Expectancy & System Quality Number (SQN)
+    avg_win = df[df['daily_return'] > 0]['daily_return'].mean()
+    avg_win = avg_win if pd.notna(avg_win) else 0.0
+    avg_loss = abs(df[df['daily_return'] < 0]['daily_return'].mean())
+    avg_loss = avg_loss if pd.notna(avg_loss) else 0.0
+    
+    loss_rate = 1 - win_rate
+    expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+    
+    # SQN Approximation (Using active days as N)
+    sqn = (total_active ** 0.5) * (expectancy / std_ret) if std_ret > 0 else 0
+
+    # --- OMEGA RATIO (Threshold = 0) ---
+    threshold = 0.0 
+    excess_returns = df['daily_return'] - threshold
+    positive_sum = excess_returns[excess_returns > 0].sum()
+    negative_sum = abs(excess_returns[excess_returns < 0].sum())
+    
+    omega_ratio = (positive_sum / negative_sum) if negative_sum > 0 else float('inf')
 
     return {
         "CAGR": cagr,
         "Max Drawdown": max_dd,
         "Recovery Time": max_underwater_days,
+        "Ulcer Index": ulcer_index,
         "Sharpe Ratio": sharpe,
         "Sortino Ratio": sortino,
+        "Information Ratio": information_ratio,
         "MAR Ratio": mar,
         "Profit Factor": profit_factor,
-        "Win Rate (Daily)": win_rate
+        "Win Rate (Daily)": win_rate,
+        "Expectancy": expectancy,
+        "SQN": sqn,
+        "Omega Ratio": omega_ratio
     }
 
 def create_scorecard_df(metrics):
@@ -748,8 +883,8 @@ with tab1:
     c1, c2 = st.columns([3, 4])
     
     with c1:
-        # Combine into a single tabbed container to save vertical space
-        tab_wl, tab_log, tab_health = st.tabs(["🔭 Watchlist", "📝 Decisions", "🖥️ Risk & Telemetry"])
+        # --- UPGRADED: 4 Tabs ---
+        tab_wl, tab_log, tab_health, tab_edge = st.tabs(["🔭 Watchlist", "📝 Decisions", "🖥️ Risk & Telemetry", "🔪 Execution & Edge"])
         
         with tab_wl:
             if watchlist_data:
@@ -806,6 +941,98 @@ with tab1:
                     st.plotly_chart(fig_corr, use_container_width=True)
             else:
                 st.caption("Need at least 2 active positions to plot correlation.")
+
+        # --- NEW TAB: EXECUTION & EDGE ---
+        with tab_edge:
+            st.markdown("#### ⚖️ Edge Quality")
+            
+            # Fetch from previously calculated metrics
+            sqn_val = metrics.get('SQN', 0)
+            ulcer_val = metrics.get('Ulcer Index', 0)
+            
+            e1, e2 = st.columns(2)
+            e1.metric("System Quality No. (SQN)", f"{sqn_val:.2f}", delta="Robust" if sqn_val > 1.5 else "Weak", delta_color="normal")
+            e2.metric("Ulcer Index (Pain)", f"{ulcer_val:.2f}", delta="Safe" if ulcer_val < 5.0 else "Stressful", delta_color="inverse")
+            
+            st.divider()
+            st.markdown("#### 🎯 Excursion Analysis (MAE vs MFE)")
+            st.caption("Scatter plot of recent closed trades. Identifies if stops are too tight or winners are choked.")
+            
+            df_ex = get_trade_excursions(api, orders)
+            
+            if not df_ex.empty:
+                fig_ex = px.scatter(
+                    df_ex, x="MAE (%)", y="MFE (%)", color="Result",
+                    hover_data=["Ticker", "PnL (%)", "Type"],
+                    color_discrete_map={"Win": "#00ff41", "Loss": "#ff4b4b"}
+                )
+                
+                # Add crosshairs for standard Stop Loss / Take Profit boundaries
+                fig_ex.add_vline(x=-3.0, line_dash="dash", line_color="red", annotation_text="Hard Stop (-3%)", annotation_position="top right")
+                fig_ex.add_hline(y=6.0, line_dash="dash", line_color="green", annotation_text="Standard TP (+6%)", annotation_position="bottom right")
+                
+                fig_ex.update_traces(marker=dict(size=10, line=dict(width=1, color='DarkSlateGrey')))
+                fig_ex.update_layout(
+                    height=300, margin=dict(l=0, r=0, t=10, b=0),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    font={'color': '#cccccc'},
+                    xaxis=dict(title="Max Adverse Excursion (Pain %)", showgrid=True, gridcolor='#333', zerolinecolor='white'),
+                    yaxis=dict(title="Max Favorable (Gain %)", showgrid=True, gridcolor='#333', zerolinecolor='white')
+                )
+                st.plotly_chart(fig_ex, use_container_width=True)
+            else:
+                st.info("Gathering excursion data. Close more trades to populate scatter plot.")
+
+            st.divider()
+            
+            # --- MOVED RECENT ORDERS & SLIPPAGE HERE ---
+            st.markdown("#### 📜 Recent Slippage")
+            today_utc = pd.Timestamp.now(tz='UTC').date()
+            if isinstance(orders, list):
+                order_data = []
+                for o in orders[:8]: # Show last 8
+                    if isinstance(o, dict) and o.get('status') == 'filled':
+                        t = o.get('filled_at', '')
+                        t_fmt = t[5:16].replace('T', ' ') if len(t) >= 16 else t
+                        
+                        limit_price = float(o.get('limit_price', 0)) if o.get('limit_price') else 0.0
+                        fill_price = float(o.get('filled_avg_price', 0)) if o.get('filled_avg_price') else 0.0
+                        
+                        slippage = 0.0
+                        if limit_price > 0 and fill_price > 0:
+                            if o.get('side') == 'buy':
+                                slippage = ((fill_price - limit_price) / limit_price) * 100
+                            else:
+                                slippage = ((limit_price - fill_price) / limit_price) * 100
+
+                        order_data.append({
+                            "Ticker": o.get('symbol', 'N/A'),
+                            "Side": o.get('side', 'N/A').upper(),
+                            "Fill Price": f"${fill_price:.2f}",
+                            "Slippage": f"{slippage:+.2f}%" if limit_price > 0 else "N/A (MKT)"
+                        })
+
+                if order_data:
+                    df_orders = pd.DataFrame(order_data)
+                    def highlight_slippage(val):
+                        if isinstance(val, str) and "%" in val:
+                            num = float(val.replace("%", "").replace("+", ""))
+                            if num > 0: return 'color: #ff4b4b' 
+                            if num < 0: return 'color: #00ff41' 
+                        return ''
+                    
+                    def highlight_side(val):
+                        if val == 'BUY': return 'color: #00ff41; font-weight: bold;'
+                        if val == 'SELL': return 'color: #ff4b4b; font-weight: bold;'
+                        return ''
+
+                    styled_df = (df_orders.style
+                                 .map(highlight_slippage, subset=['Slippage'])
+                                 .map(highlight_side, subset=['Side']))
+
+                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No recent filled orders found.")
 
     with c2:
         st.subheader("💼 Capital & Active Portfolio")
