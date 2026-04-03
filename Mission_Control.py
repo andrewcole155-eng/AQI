@@ -821,15 +821,6 @@ if account:
 
 st.divider()
 
-# --- ADDED: BOT HEARTBEAT COUNTDOWN ---
-    if status_val == "🟢 Active" and seconds_ago < 300:
-        safe_seconds_ago = max(0, seconds_ago) 
-        seconds_left = max(0, 300 - safe_seconds_ago)
-        progress_val = int(max(0, min(100, (safe_seconds_ago / 300.0) * 100)))
-        st.progress(progress_val, text=f"⏳ Next Market Scan in ~{seconds_left}s")
-
-st.divider()
-
 # =====================================================================
 # --- GLOBAL DATA PREP FOR ACTION CENTER & TABS ---
 # =====================================================================
