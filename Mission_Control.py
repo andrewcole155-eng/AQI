@@ -1307,37 +1307,11 @@ with tab3:
         
         # --- CALCULATIONS ---
         
-        # A. METRICS: Use ADJUSTED Data (Honest Strategy Score)
-        # Note: We assign it to st.session_state so Tab1 can read it on the NEXT refresh loop
+        # A. METRICS: Use ADJUSTED Data (Honest Strategy Score - LIFETIME)
+        # We assign it to st.session_state so Tab1 can read it on the NEXT refresh loop
         st.session_state['global_metrics'] = calculate_advanced_metrics(hist_df_adj)
         metrics = st.session_state['global_metrics']
         
-        # --- NEW CODE: Override Overall Metrics with 30-Day Rolling (Regime) Metrics ---
-        # Calculate rolling edge early so we can feed it into the scorecard
-        roll_df = calculate_rolling_edge(hist_df_adj, window=30)
-        
-        if not roll_df.empty:
-            latest = roll_df.iloc[-1]
-            
-            # Convert the absolute 30-day return into an Annualized CAGR for the table
-            ret_30d = latest['rolling_return'] / 100 
-            annualized_30d_cagr = ((1 + ret_30d) ** (365/30)) - 1
-            
-            # Override the dictionary with the latest 30-day snapshot
-            metrics['CAGR'] = annualized_30d_cagr
-            metrics['Max Drawdown'] = latest['rolling_dd'] / 100  # Scorecard expects a decimal
-            metrics['Sharpe Ratio'] = latest['rolling_sharpe']
-            metrics['Sortino Ratio'] = latest['rolling_sortino']
-            metrics['Win Rate (Daily)'] = latest['rolling_win_rate'] / 100
-            metrics['SQN'] = latest['rolling_sqn']
-            
-            # Recalculate the MAR Ratio using the new 30-day metrics
-            metrics['MAR Ratio'] = (metrics['CAGR'] / abs(metrics['Max Drawdown'])) if metrics['Max Drawdown'] != 0 else 0
-            
-            # Save the updated regime metrics to session state so other tabs match
-            st.session_state['global_metrics'] = metrics
-        # -------------------------------------------------------------------------------
-
         scorecard_df = create_scorecard_df(metrics)
         inst_score = calculate_institutional_score(metrics)
         
@@ -1465,7 +1439,9 @@ with tab3:
         # --- NEW SECTION: ROLLING EDGE ---
         st.divider()
         st.markdown("### 🔄 30-Day Rolling Edge (Momentum, Defense & Regime)")
-                
+        
+        roll_df = calculate_rolling_edge(hist_df_adj, window=30) # <--- ENSURE THIS IS HERE
+        
         if not roll_df.empty:
             # Create a 3x2 grid (Updated to 4x2 based on your code structure)
             c_roll1, c_roll2 = st.columns(2)
