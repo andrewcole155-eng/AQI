@@ -649,6 +649,67 @@ def calculate_rolling_edge(df, window=30):
     
     return r_df.dropna(subset=['rolling_return', 'rolling_sharpe', 'rolling_dd'])
 
+def generate_tactical_alerts(roll_df, global_metrics, margin_util):
+    """Evaluates rolling metrics and generates actionable strategy adjustments."""
+    alerts = []
+    
+    # Need at least a few days of rolling data
+    if roll_df.empty or len(roll_df) < 5:
+        return alerts
+
+    # Get latest rolling metrics safely
+    latest_sharpe = roll_df['rolling_sharpe'].iloc[-1]
+    latest_sqn = roll_df['rolling_sqn'].iloc[-1]
+    latest_ulcer = roll_df['rolling_ulcer'].iloc[-1]
+    latest_win_rate = roll_df['rolling_win_rate'].iloc[-1]
+
+    # 1. Sharpe Decay (Position Sizing)
+    if pd.notna(latest_sharpe) and latest_sharpe < 0.5:
+        alerts.append({
+            "level": "error",
+            "icon": "📉",
+            "title": f"Regime Shift: Rolling Sharpe is weak ({latest_sharpe:.2f})",
+            "action": "HALVE POSITION SIZES. The risk-adjusted edge is decaying. Reduce lot sizes by 50% until Sharpe recovers > 1.0."
+        })
+
+    # 2. SQN Filter (Selectivity)
+    if pd.notna(latest_sqn) and latest_sqn < 1.0:
+        alerts.append({
+            "level": "warning",
+            "icon": "⚠️",
+            "title": f"Edge Reliability Drop: SQN is low ({latest_sqn:.2f})",
+            "action": "RESTRICT ENTRIES. Only accept '🔥 Screaming Setups' (>80% conviction). Reject standard signals."
+        })
+
+    # 3. Ulcer/Drawdown Shield (Defense)
+    if pd.notna(latest_ulcer) and latest_ulcer > 4.0:
+        alerts.append({
+            "level": "warning",
+            "icon": "🛡️",
+            "title": f"Pain Threshold Reached: Ulcer Index elevated ({latest_ulcer:.2f})",
+            "action": "TIGHTEN STOPS. Move standard -3% stops up to -1.5%. Trail winners to breakeven immediately."
+        })
+
+    # 4. Choppy Market (Take Profits)
+    if pd.notna(latest_win_rate) and latest_win_rate < 45.0:
+        alerts.append({
+            "level": "info",
+            "icon": "✂️",
+            "title": f"Choppy Execution: Win rate dropping ({latest_win_rate:.1f}%)",
+            "action": "FRONT-RUN TARGETS. Market lacks follow-through. Scale out of winning positions earlier (e.g., at +3% instead of +6%)."
+        })
+        
+    # 5. Margin Danger
+    if margin_util > 75.0:
+        alerts.append({
+            "level": "error",
+            "icon": "🚨",
+            "title": f"Leverage Warning: Margin at {margin_util:.1f}%",
+            "action": "FREEZE BUYS. Do not deploy new capital. Consider trimming the lowest conviction holding."
+        })
+
+    return alerts
+
 def format_log_line(line):
     """Formats a single log line to look like VS Code syntax highlighting."""
     # 1. Safety escape for HTML
@@ -760,8 +821,74 @@ if account:
 
 st.divider()
 
-# 2. MAIN CONTENT TABS
-# --- ADDED: PENDING / STUCK ORDER ALERTS ---
+# --- ADDED: BOT HEARTBEAT COUNTDOWN ---
+    if status_val == "🟢 Active" and seconds_ago < 300:
+        safe_seconds_ago = max(0, seconds_ago) 
+        seconds_left = max(0, 300 - safe_seconds_ago)
+        progress_val = int(max(0, min(100, (safe_seconds_ago / 300.0) * 100)))
+        st.progress(progress_val, text=f"⏳ Next Market Scan in ~{seconds_left}s")
+
+st.divider()
+
+# =====================================================================
+# --- GLOBAL DATA PREP FOR ACTION CENTER & TABS ---
+# =====================================================================
+hist_df_raw = get_portfolio_history(api)
+hist_df_adj = hist_df_raw.copy()
+roll_df = pd.DataFrame()
+
+if not hist_df_raw.empty and account:
+    # Ensure UTC 
+    if hist_df_raw['timestamp'].dt.tz is None:
+        hist_df_raw['timestamp'] = hist_df_raw['timestamp'].dt.tz_localize('UTC')
+    
+    current_equity_raw = float(account['equity'])
+    now_ts = pd.Timestamp.now(tz='UTC') 
+    live_row = pd.DataFrame([{'timestamp': now_ts, 'equity': current_equity_raw}])
+    hist_df_raw = pd.concat([hist_df_raw, live_row], ignore_index=True)
+    hist_df_adj = hist_df_raw.copy()
+
+    # Apply deposits strictly
+    def apply_deposit(df, date_str, amount):
+        ts = pd.Timestamp(date_str, tz='UTC')
+        mask = df['timestamp'] >= ts
+        df.loc[mask, 'equity'] -= amount
+        return df
+
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-01-24", 68.10)
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-02-12", 69.81)
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-02-16", 139.75)
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-02-26", 69.71)
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-03-04", 68.84)
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-03-13", 69.61)
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-03-21", 69.01)        
+
+    # Pre-calculate global metrics and rolling edge for the alerts
+    st.session_state['global_metrics'] = calculate_advanced_metrics(hist_df_adj)
+    roll_df = calculate_rolling_edge(hist_df_adj, window=30)
+
+# =====================================================================
+# --- TACTICAL ACTION CENTER ---
+# =====================================================================
+maint_margin = float(account.get('maintenance_margin', 0)) if account else 0.0
+equity_val = float(account['equity']) if account else 0.0
+margin_util = (maint_margin / equity_val * 100) if equity_val > 0 else 0.0
+
+alerts = generate_tactical_alerts(roll_df, st.session_state.get('global_metrics', {}), margin_util)
+alerts.append({"level": "error", "icon": "🧪", "title": "COMMS CHECK", "action": "This is a forced test to verify the Action Center is alive."})
+if alerts:
+    st.markdown("### ⚡ Tactical Directives")
+    for alert in alerts:
+        msg = f"**{alert['title']}** — {alert['action']}"
+        if alert['level'] == "error":
+            st.error(f"{alert['icon']} {msg}")
+        elif alert['level'] == "warning":
+            st.warning(f"{alert['icon']} {msg}")
+        else:
+            st.info(f"{alert['icon']} {msg}")
+    st.divider()
+
+# --- PENDING / STUCK ORDER ALERTS ---
 if isinstance(orders, list):
     pending_orders = [o for o in orders if isinstance(o, dict) and o.get('status') in ['new', 'accepted', 'partially_filled', 'pending_new']]
     for po in pending_orders:
@@ -1266,51 +1393,12 @@ with tab2:
         st.write("No logs found.")
 
 with tab3:
-    # 1. Get History
-    hist_df_raw = get_portfolio_history(api)
-    metrics = {} # Default empty dict in case of API failure
-
     if not hist_df_raw.empty and account:
         current_equity_raw = float(account['equity'])
-
-        # === FIX: Ensure everything is UTC for comparison ===
-        if hist_df_raw['timestamp'].dt.tz is None:
-            hist_df_raw['timestamp'] = hist_df_raw['timestamp'].dt.tz_localize('UTC')
-        
-        now_ts = pd.Timestamp.now(tz='UTC') 
-
-        # Append LIVE Raw Data
-        live_row = pd.DataFrame([{
-            'timestamp': now_ts, 
-            'equity': current_equity_raw
-        }])
-        hist_df_raw = pd.concat([hist_df_raw, live_row], ignore_index=True)
-
-        # === DATA FORK: Create "Adjusted" Copy for Metrics Only ===
-        hist_df_adj = hist_df_raw.copy()
-        
-        # Helper to ensure mask comparison is apples-to-apples
-        def apply_deposit(df, date_str, amount):
-            ts = pd.Timestamp(date_str, tz='UTC')
-            mask = df['timestamp'] >= ts
-            df.loc[mask, 'equity'] -= amount
-            return df
-
-        # Apply all deposits strictly
-        hist_df_adj = apply_deposit(hist_df_adj, "2026-01-24", 68.10)
-        hist_df_adj = apply_deposit(hist_df_adj, "2026-02-12", 69.81)
-        hist_df_adj = apply_deposit(hist_df_adj, "2026-02-16", 139.75)
-        hist_df_adj = apply_deposit(hist_df_adj, "2026-02-26", 69.71)
-        hist_df_adj = apply_deposit(hist_df_adj, "2026-03-04", 68.84)
-        hist_df_adj = apply_deposit(hist_df_adj, "2026-03-13", 69.61)
-        hist_df_adj = apply_deposit(hist_df_adj, "2026-03-21", 69.01)        
         
         # --- CALCULATIONS ---
-        
-        # A. METRICS: Use ADJUSTED Data (Honest Strategy Score - LIFETIME)
-        # We assign it to st.session_state so Tab1 can read it on the NEXT refresh loop
-        st.session_state['global_metrics'] = calculate_advanced_metrics(hist_df_adj)
-        metrics = st.session_state['global_metrics']
+        # A. METRICS: Read from the pre-calculated global state
+        metrics = st.session_state.get('global_metrics', {})
         
         scorecard_df = create_scorecard_df(metrics)
         inst_score = calculate_institutional_score(metrics)
