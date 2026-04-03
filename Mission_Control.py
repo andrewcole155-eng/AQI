@@ -866,7 +866,7 @@ equity_val = float(account['equity']) if account else 0.0
 margin_util = (maint_margin / equity_val * 100) if equity_val > 0 else 0.0
 
 alerts = generate_tactical_alerts(roll_df, st.session_state.get('global_metrics', {}), margin_util)
-alerts.append({"level": "error", "icon": "🧪", "title": "COMMS CHECK", "action": "This is a forced test to verify the Action Center is alive."})
+#alerts.append({"level": "error", "icon": "🧪", "title": "COMMS CHECK", "action": "This is a forced test to verify the Action Center is alive."})
 if alerts:
     st.markdown("### ⚡ Tactical Directives")
     for alert in alerts:
