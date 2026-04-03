@@ -650,7 +650,7 @@ def calculate_rolling_edge(df, window=30):
     return r_df.dropna(subset=['rolling_return', 'rolling_sharpe', 'rolling_dd'])
 
 def generate_tactical_alerts(roll_df, global_metrics, margin_util):
-    """Evaluates rolling metrics and generates two-way actionable strategy adjustments."""
+    """Evaluates rolling metrics and reports active autonomous system adjustments."""
     alerts = []
     
     if roll_df.empty or len(roll_df) < 5:
@@ -664,34 +664,34 @@ def generate_tactical_alerts(roll_df, global_metrics, margin_util):
     # --- 1. SHARPE (Position Sizing) ---
     if pd.notna(latest_sharpe):
         if latest_sharpe < 0.5:
-            alerts.append({"level": "error", "icon": "📉", "title": f"Regime Shift: Rolling Sharpe is weak ({latest_sharpe:.2f})", "action": "HALVE POSITION SIZES. The risk-adjusted edge is decaying."})
+            alerts.append({"level": "error", "icon": "📉", "title": f"Regime Shift: Rolling Sharpe is weak ({latest_sharpe:.2f})", "action": "POSITION SIZING HALVED. The risk-adjusted edge is decaying. Base lot sizes reduced by 50% until Sharpe recovers > 1.0."})
         elif latest_sharpe > 1.5:
-            alerts.append({"level": "success", "icon": "🟢", "title": f"Elite Edge: Sharpe is surging ({latest_sharpe:.2f})", "action": "RESTORE BASE SIZING. The regime is highly favorable. It is safe to deploy full-lot sizes."})
+            alerts.append({"level": "success", "icon": "🟢", "title": f"Elite Edge: Sharpe is surging ({latest_sharpe:.2f})", "action": "BASE SIZING RESTORED. The regime is highly favorable. System is deploying full-lot sizes."})
 
     # --- 2. SQN (Selectivity & Filters) ---
     if pd.notna(latest_sqn):
         if latest_sqn < 1.0:
-            alerts.append({"level": "warning", "icon": "⚠️", "title": f"Edge Reliability Drop: SQN is low ({latest_sqn:.2f})", "action": "RESTRICT ENTRIES. Only accept '🔥 Screaming Setups'. Reject standard signals."})
+            alerts.append({"level": "warning", "icon": "⚠️", "title": f"Edge Reliability Drop: SQN is low ({latest_sqn:.2f})", "action": "ENTRIES RESTRICTED. Standard signals rejected. System will only deploy capital for '🔥 Screaming Setups'."})
         elif latest_sqn > 2.0:
-            alerts.append({"level": "success", "icon": "🔓", "title": f"High System Quality: SQN is elite ({latest_sqn:.2f})", "action": "EXPAND UNIVERSE. System reliability is very high. Safe to take '⚡ High Conviction' and standard setups."})
+            alerts.append({"level": "success", "icon": "🔓", "title": f"High System Quality: SQN is elite ({latest_sqn:.2f})", "action": "UNIVERSE EXPANDED. System reliability is elite. Accepting both '⚡ High Conviction' and standard setups."})
 
     # --- 3. ULCER INDEX (Defense & Stops) ---
     if pd.notna(latest_ulcer):
         if latest_ulcer > 4.0:
-            alerts.append({"level": "warning", "icon": "🛡️", "title": f"Pain Threshold Reached: Ulcer Index elevated ({latest_ulcer:.2f})", "action": "TIGHTEN STOPS. Move standard -3% stops up to -1.5%. Trail winners to breakeven immediately."})
+            alerts.append({"level": "warning", "icon": "🛡️", "title": f"Pain Threshold Reached: Ulcer Index elevated ({latest_ulcer:.2f})", "action": "DEFENSIVE PROTOCOL ENGAGED. Standard stops tightened to -1.5%. Winners are being trailed to breakeven immediately."})
         elif latest_ulcer < 1.5:
-            alerts.append({"level": "success", "icon": "🕊️", "title": f"Smooth Sailing: Low Ulcer Index ({latest_ulcer:.2f})", "action": "RELAX STOPS. Drawdowns are minimal. Give trades the full -3% breathing room to develop."})
+            alerts.append({"level": "success", "icon": "🕊️", "title": f"Smooth Sailing: Low Ulcer Index ({latest_ulcer:.2f})", "action": "STANDARD STOPS RESTORED. Drawdowns are minimal. Trades are operating with full -3% breathing room."})
 
     # --- 4. WIN RATE (Take Profits) ---
     if pd.notna(latest_win_rate):
         if latest_win_rate < 45.0:
-            alerts.append({"level": "info", "icon": "✂️", "title": f"Choppy Execution: Win rate dropping ({latest_win_rate:.1f}%)", "action": "FRONT-RUN TARGETS. Market lacks follow-through. Scale out of winners at +3%."})
+            alerts.append({"level": "info", "icon": "✂️", "title": f"Choppy Execution: Win rate dropping ({latest_win_rate:.1f}%)", "action": "TARGETS FRONT-RUN. Market lacks follow-through. System is scaling out of winners early at +3%."})
         elif latest_win_rate > 55.0:
-            alerts.append({"level": "success", "icon": "🏃‍♂️", "title": f"High Hit Rate: Win rate is strong ({latest_win_rate:.1f}%)", "action": "LET RUNNERS RUN. The market is respecting targets. Hold for the full +6% Take Profit or trail stops aggressively upward."})
+            alerts.append({"level": "success", "icon": "🏃‍♂️", "title": f"High Hit Rate: Win rate is strong ({latest_win_rate:.1f}%)", "action": "TRAIL/HOLD ACTIVATED. Market is respecting targets. System is holding for full +6% Take Profit or trailing aggressively."})
 
     # --- 5. MARGIN (Leverage) ---
     if margin_util > 75.0:
-        alerts.append({"level": "error", "icon": "🚨", "title": f"Leverage Warning: Margin at {margin_util:.1f}%", "action": "FREEZE BUYS. Do not deploy new capital. Trim the lowest conviction holding."})
+        alerts.append({"level": "error", "icon": "🚨", "title": f"Leverage Warning: Margin at {margin_util:.1f}%", "action": "BUYING FROZEN. Leverage limits reached. No new capital will be deployed."})
 
     return alerts
 
@@ -853,7 +853,7 @@ margin_util = (maint_margin / equity_val * 100) if equity_val > 0 else 0.0
 alerts = generate_tactical_alerts(roll_df, st.session_state.get('global_metrics', {}), margin_util)
 #alerts.append({"level": "error", "icon": "🧪", "title": "COMMS CHECK", "action": "This is a forced test to verify the Action Center is alive."})
 if alerts:
-    st.markdown("### ⚡ Tactical Directives")
+    st.markdown("### ⚡ Active System Overrides")
     for alert in alerts:
         msg = f"**{alert['title']}** — {alert['action']}"
         if alert['level'] == "error":
