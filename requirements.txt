@@ -6,3 +6,4 @@ gspread
 yfinance
 psutil
 requests
+tzdata

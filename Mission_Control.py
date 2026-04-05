@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import yfinance as yf
 import psutil
 import requests
+import tzdata
 
 st.set_page_config(
     page_title="Angel V6 Mission Control",
@@ -356,13 +357,13 @@ def calculate_seasonality(df):
     """
     s_df = df.copy()
     
-    # === FIX: Normalize to US Market Time (US/Eastern) ===
+    # === FIX: Normalize to US Market Time (America/New_York) ===
     # This fixes the "Blank Monday" (AU Tuesday) and "Missing Saturday" (AU Friday)
     if s_df['timestamp'].dt.tz is None:
         # If timestamps are naive (no timezone), assume UTC first then convert
-        s_df['timestamp'] = s_df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
+        s_df['timestamp'] = s_df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
     else:
-        s_df['timestamp'] = s_df['timestamp'].dt.tz_convert('US/Eastern')
+        s_df['timestamp'] = s_df['timestamp'].dt.tz_convert('America/New_York')
     # =====================================================
 
     s_df['daily_return'] = s_df['equity'].pct_change() * 100
