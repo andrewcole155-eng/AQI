@@ -83,6 +83,16 @@ def read_bot_logs():
     except Exception as e:
         return [f"Google Sheets Error: {e}"]
 
+@st.cache_data(ttl=60)
+def get_bot_state():
+    """Reads the local JSON state file to extract Ghost Positions and History."""
+    state_path = '/home/andrew/.ssh/Trading/Alpaca_V2/trading_state.json'
+    try:
+        with open(state_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        return {}
+
 @st.cache_data(ttl=30)
 def get_account_data(_api):
     try:
@@ -908,7 +918,10 @@ if isinstance(orders, list):
 # =====================================================================
 # 2. MAIN TABS
 # =====================================================================
-tab1, tab2, tab3 = st.tabs(["🧠 Bot Logic & Positions", "📜 Raw Logs", "📈 Performance"])
+tab1, tab2, tab3, tab4 = st.tabs(["🧠 Bot Logic & Positions", "📜 Raw Logs", "📈 Real Performance", "👻 Ghost Performance"])
+
+# Fetch the live state file for the Ghost tabs
+bot_state = get_bot_state()
 
 with tab1:
     # --- 1. MARKET PULSE ---
@@ -932,12 +945,12 @@ with tab1:
     st.markdown("#### 🚦 Ghost Execution Regimes")
     c_light1, c_light2, _spacer2 = st.columns([2, 2, 6])
     
+    # Defaults to Live if ghost_regime data is missing on first load
     long_color = "🟢 LIVE" if ghost_regime.get("Long", True) else "🔴 SIMULATION"
     short_color = "🟢 LIVE" if ghost_regime.get("Short", True) else "🔴 SIMULATION"
     
     c_light1.metric("Long Strategy", long_color, f"Ghost MA: {ghost_regime.get('Long_MA', '0.0%')}", delta_color="off")
     c_light2.metric("Short Strategy", short_color, f"Ghost MA: {ghost_regime.get('Short_MA', '0.0%')}", delta_color="off")
-
 
     # --- UPGRADED: CAPITAL DEPLOYMENT STATES ---
     st.markdown("#### 🔋 Capital Deployment Status")
@@ -1124,57 +1137,6 @@ with tab1:
             else:
                 st.info("Gathering excursion data. Close more trades to populate scatter plot.")
 
-            st.divider()
-            
-            # --- MOVED RECENT ORDERS & SLIPPAGE HERE ---
-            st.markdown("#### 📜 Recent Slippage")
-            today_utc = pd.Timestamp.now(tz='UTC').date()
-            if isinstance(orders, list):
-                order_data = []
-                for o in orders[:8]: # Show last 8
-                    if isinstance(o, dict) and o.get('status') == 'filled':
-                        t = o.get('filled_at', '')
-                        t_fmt = t[5:16].replace('T', ' ') if len(t) >= 16 else t
-                        
-                        limit_price = float(o.get('limit_price', 0)) if o.get('limit_price') else 0.0
-                        fill_price = float(o.get('filled_avg_price', 0)) if o.get('filled_avg_price') else 0.0
-                        
-                        slippage = 0.0
-                        if limit_price > 0 and fill_price > 0:
-                            if o.get('side') == 'buy':
-                                slippage = ((fill_price - limit_price) / limit_price) * 100
-                            else:
-                                slippage = ((limit_price - fill_price) / limit_price) * 100
-
-                        order_data.append({
-                            "Ticker": o.get('symbol', 'N/A'),
-                            "Side": o.get('side', 'N/A').upper(),
-                            "Fill Price": f"${fill_price:.2f}",
-                            "Slippage": f"{slippage:+.2f}%" if limit_price > 0 else "N/A (MKT)"
-                        })
-
-                if order_data:
-                    df_orders = pd.DataFrame(order_data)
-                    def highlight_slippage(val):
-                        if isinstance(val, str) and "%" in val:
-                            num = float(val.replace("%", "").replace("+", ""))
-                            if num > 0: return 'color: #ff4b4b' 
-                            if num < 0: return 'color: #00ff41' 
-                        return ''
-                    
-                    def highlight_side(val):
-                        if val == 'BUY': return 'color: #00ff41; font-weight: bold;'
-                        if val == 'SELL': return 'color: #ff4b4b; font-weight: bold;'
-                        return ''
-
-                    styled_df = (df_orders.style
-                                 .map(highlight_slippage, subset=['Slippage'])
-                                 .map(highlight_side, subset=['Side']))
-
-                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                else:
-                    st.caption("No recent filled orders found.")
-
     with c2:
         st.subheader("💼 Capital & Active Portfolio")
         
@@ -1266,7 +1228,7 @@ with tab1:
                 pos_data.append({
                     "Ticker": sym, 
                     "Side": side.upper(),
-                    "Invested": invested_amt, # <--- NEW
+                    "Invested": invested_amt,
                     "Qty": qty,
                     "P/L (%)": float(p['unrealized_plpc']) * 100,
                     "Journey": progress,
@@ -1277,7 +1239,7 @@ with tab1:
                 pd.DataFrame(pos_data),
                 use_container_width=True,
                 column_config={
-                    "Invested": st.column_config.NumberColumn("Invested", format="$%.2f"), # <--- FORMATTED AS CURRENCY
+                    "Invested": st.column_config.NumberColumn("Invested", format="$%.2f"),
                     "P/L (%)": st.column_config.NumberColumn("P/L (%)", format="%.2f%%"),
                     "Journey": st.column_config.ProgressColumn(
                         "Journey to TP", help="Green bar moving right towards Take Profit.",
@@ -1315,6 +1277,33 @@ with tab1:
                 
         else:
             st.caption("No active positions currently held.")
+
+        # --- NEW: VIRTUAL HOLDINGS (GHOST POSITIONS) ---
+        st.divider()
+        st.markdown("### 👻 Virtual Holdings (Ghost Positions)")
+        st.caption("Positions currently tracked in simulation to test market regime safety.")
+        
+        ghost_positions = bot_state.get('ghost_positions', {}) if 'bot_state' in locals() else {}
+        if ghost_positions:
+            g_data = []
+            for g_side, info in ghost_positions.items():
+                g_data.append({
+                    "Strategy": g_side.upper(),
+                    "Virtual Entry": info.get('entry_price', 0.0),
+                    "Signal Time (UTC)": pd.to_datetime(info.get('entry_time')).strftime('%Y-%m-%d %H:%M') if info.get('entry_time') else "N/A"
+                })
+            
+            st.dataframe(
+                pd.DataFrame(g_data), 
+                use_container_width=True, 
+                hide_index=True, 
+                column_config={
+                    "Virtual Entry": st.column_config.NumberColumn(format="$%.2f"),
+                    "Strategy": st.column_config.TextColumn()
+                }
+            )
+        else:
+            st.info("No active virtual positions currently tracked.")
 
         # --- UPGRADED: RECENT ORDERS & SLIPPAGE ---
         st.divider()
@@ -1778,6 +1767,61 @@ with tab3:
                 )
     else:
         st.write("No history data available yet.")
+
+with tab4:
+    st.markdown("### 👻 Decoupled Ghost Engine Performance")
+    st.caption("Visualizes the virtual paper-trades the bot takes to determine if the live market is safe for real capital.")
+    
+    ghost_history = bot_state.get('ghost_history', {'long': [], 'short': []})
+    
+    c_g1, c_g2 = st.columns(2)
+    
+    with c_g1:
+        st.markdown("#### 🟢 Long Ghost Strategy")
+        long_hist = ghost_history.get('long', [])
+        if long_hist:
+            # Calculate Moving Average
+            long_ma = sum(long_hist[-5:]) / min(5, len(long_hist))
+            st.metric("Long Ghost MA (Last 5 Trades)", f"{long_ma*100:.2f}%", 
+                      delta="LIVE (GATES OPEN)" if long_ma >= -0.005 else "SIMULATION (BLOCKED)", 
+                      delta_color="normal" if long_ma >= -0.005 else "inverse")
+            
+            # Plot Cumulative Ghost PnL
+            long_cum = np.cumsum(long_hist) * 100
+            fig_g_long = px.line(x=range(1, len(long_cum)+1), y=long_cum, markers=True)
+            fig_g_long.update_traces(line_color='#00ff41', marker=dict(size=8))
+            fig_g_long.update_layout(
+                xaxis_title="Virtual Trades", yaxis_title="Cumulative Virtual PnL (%)", 
+                template="plotly_dark", height=350, margin=dict(l=0, r=0, t=30, b=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+            )
+            fig_g_long.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
+            st.plotly_chart(fig_g_long, use_container_width=True)
+        else:
+            st.info("No Long Ghost history available yet.")
+
+    with c_g2:
+        st.markdown("#### 🔴 Short Ghost Strategy")
+        short_hist = ghost_history.get('short', [])
+        if short_hist:
+            short_ma = sum(short_hist[-5:]) / min(5, len(short_hist))
+            st.metric("Short Ghost MA (Last 5 Trades)", f"{short_ma*100:.2f}%", 
+                      delta="LIVE (GATES OPEN)" if short_ma >= -0.005 else "SIMULATION (BLOCKED)", 
+                      delta_color="normal" if short_ma >= -0.005 else "inverse")
+            
+            # Plot Cumulative Ghost PnL
+            short_cum = np.cumsum(short_hist) * 100
+            fig_g_short = px.line(x=range(1, len(short_cum)+1), y=short_cum, markers=True)
+            fig_g_short.update_traces(line_color='#ff4b4b', marker=dict(size=8))
+            fig_g_short.update_layout(
+                xaxis_title="Virtual Trades", yaxis_title="Cumulative Virtual PnL (%)", 
+                template="plotly_dark", height=350, margin=dict(l=0, r=0, t=30, b=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+            )
+            fig_g_short.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
+            st.plotly_chart(fig_g_short, use_container_width=True)
+        else:
+            st.info("No Short Ghost history available yet.")
 
 # === AUTO REFRESH LOOP ===
 if auto_refresh:
