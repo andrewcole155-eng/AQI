@@ -134,12 +134,16 @@ def parse_latest_run_logic(logs):
     1. Signals (Decisions)
     2. Watchlist (High potential)
     3. Neural Conviction (Latest confidence score and Action)
+    4. Ghost Regime Status
     """
     signals = {}
     watchlist = [] 
     neural_conviction = {} 
     last_run_timestamp = None
     last_run_str = "Unknown"
+    
+    # Default Ghost State
+    ghost_regime = {"Long": True, "Short": True, "Long_MA": "0.0%", "Short_MA": "0.0%"}
     
     ts_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})')
     conf_pattern = re.compile(r'Conf:\s*([\d\.]+)%?')
@@ -148,8 +152,19 @@ def parse_latest_run_logic(logs):
     action_map = {"0": "HOLD", "1": "LONG", "2": "SHORT", "3": "CLOSE"}
     
     for line in reversed(logs):
+        # Extract Ghost Regime
+        if "GHOST REGIME |" in line and ghost_regime["Long_MA"] == "0.0%":
+            try:
+                long_part = line.split("|")[1]
+                short_part = line.split("|")[2]
+                ghost_regime["Long_MA"] = re.search(r'Long MA:\s*(.*?)\s*\(', long_part).group(1)
+                ghost_regime["Long"] = "True" in long_part
+                ghost_regime["Short_MA"] = re.search(r'Short MA:\s*(.*?)\s*\(', short_part).group(1)
+                ghost_regime["Short"] = "True" in short_part
+            except Exception: pass
+
         all_tags = re.findall(r'\[([A-Z]+)\]', line)
-        valid_tickers = [tag for tag in all_tags if tag not in ignore_tags]
+        valid_tickers = [tag for tag in all_tags if tag not in ignore_tags and tag != 'GHOST']
         
         if valid_tickers:
             ticker = valid_tickers[-1] 
@@ -169,9 +184,8 @@ def parse_latest_run_logic(logs):
                 clean_msg = line.split(f"[{ticker}]")[-1].strip()
                 if "FINAL SIGNAL" in line:
                     signals[ticker] = "✅ " + clean_msg
-                elif "Forcing HOLD" in line or "Margin" in line:
+                elif "Forcing HOLD" in line or "Margin" in line or "GHOST GATE" in line:
                     signals[ticker] = "⏸️ " + clean_msg
-                    # Checks against 20.0 threshold, formats string securely
                     if confidence > 20.0: 
                         tag = "🔥 Screaming Setup" if confidence > 80.0 else ("⚡ High Conviction" if confidence > 50.0 else "👀 Watching")
                         watchlist.append({"Ticker": ticker, "Conf": f"{confidence:.1f}%", "Status": tag})
@@ -194,7 +208,7 @@ def parse_latest_run_logic(logs):
                     pass
 
     unique_watchlist = {v['Ticker']:v for v in watchlist}.values()
-    return last_run_str, last_run_timestamp, signals, list(unique_watchlist), neural_conviction
+    return last_run_str, last_run_timestamp, signals, list(unique_watchlist), neural_conviction, ghost_regime
 
 @st.cache_data(ttl=300)
 def get_market_benchmark():
@@ -650,7 +664,7 @@ def calculate_rolling_edge(df, window=30):
     
     return r_df.dropna(subset=['rolling_return', 'rolling_sharpe', 'rolling_dd'])
 
-def generate_tactical_alerts(roll_df, global_metrics, margin_util):
+def generate_tactical_alerts(roll_df, global_metrics, margin_util, ghost_regime):
     """Evaluates rolling metrics and reports active autonomous system adjustments."""
     alerts = []
     
@@ -658,23 +672,21 @@ def generate_tactical_alerts(roll_df, global_metrics, margin_util):
         return alerts
 
     latest_sharpe = roll_df['rolling_sharpe'].iloc[-1]
-    latest_sqn = roll_df['rolling_sqn'].iloc[-1]
     latest_ulcer = roll_df['rolling_ulcer'].iloc[-1]
     latest_win_rate = roll_df['rolling_win_rate'].iloc[-1]
 
-    # --- 1. SHARPE (Position Sizing) ---
+    # --- 1. GHOST REGIME (Directional Gates) ---
+    if not ghost_regime.get("Long", True):
+        alerts.append({"level": "error", "icon": "🔴", "title": f"Longs Suspended (Ghost MA: {ghost_regime.get('Long_MA')})", "action": "GHOST GATE CLOSED. The edge for Longs is decaying. Real capital blocked until simulation recovers."})
+    if not ghost_regime.get("Short", True):
+        alerts.append({"level": "error", "icon": "🔴", "title": f"Shorts Suspended (Ghost MA: {ghost_regime.get('Short_MA')})", "action": "GHOST GATE CLOSED. The edge for Shorts is decaying. Real capital blocked until simulation recovers."})
+
+    # --- 2. SHARPE (Position Sizing) ---
     if pd.notna(latest_sharpe):
         if latest_sharpe < 0.5:
             alerts.append({"level": "error", "icon": "📉", "title": f"Regime Shift: Rolling Sharpe is weak ({latest_sharpe:.2f})", "action": "POSITION SIZING HALVED. The risk-adjusted edge is decaying. Base lot sizes reduced by 50% until Sharpe recovers > 1.0."})
         elif latest_sharpe > 1.5:
             alerts.append({"level": "success", "icon": "🟢", "title": f"Elite Edge: Sharpe is surging ({latest_sharpe:.2f})", "action": "BASE SIZING RESTORED. The regime is highly favorable. System is deploying full-lot sizes."})
-
-    # --- 2. SQN (Selectivity & Filters) ---
-    if pd.notna(latest_sqn):
-        if latest_sqn < 1.0:
-            alerts.append({"level": "warning", "icon": "⚠️", "title": f"Edge Reliability Drop: SQN is low ({latest_sqn:.2f})", "action": "ENTRIES RESTRICTED. Standard signals rejected. System will only deploy capital for '🔥 Screaming Setups'."})
-        elif latest_sqn > 2.0:
-            alerts.append({"level": "success", "icon": "🔓", "title": f"High System Quality: SQN is elite ({latest_sqn:.2f})", "action": "UNIVERSE EXPANDED. System reliability is elite. Accepting both '⚡ High Conviction' and standard setups."})
 
     # --- 3. ULCER INDEX (Defense & Stops) ---
     if pd.notna(latest_ulcer):
@@ -719,6 +731,10 @@ def format_log_line(line):
         r'<span class="log-ticker">[\1]</span>', 
         clean_line
     )
+
+    # 5. Colorize Ghost Trading Tags
+    clean_line = clean_line.replace("[GHOST]", '<span style="color: #c586c0; font-weight: bold;">[GHOST]</span>')
+    clean_line = clean_line.replace("🚦 GHOST GATE", '<span style="color: #ffb000; font-weight: bold;">🚦 GHOST GATE</span>')
 
     return f'<div class="log-line">{clean_line}</div>'
 
@@ -774,7 +790,8 @@ if account:
     
     # Process Logs
     logs = read_bot_logs()
-    last_run_str, last_run_dt, parsed_signals, watchlist_data, conviction_data = parse_latest_run_logic(logs)
+    # Unpack the new ghost_regime variable here
+    last_run_str, last_run_dt, parsed_signals, watchlist_data, conviction_data, ghost_regime = parse_latest_run_logic(logs)
 
     # Calculate "Time Since Last Run"
     status_label = "Bot Status"
@@ -799,10 +816,7 @@ if account:
     if status_val == "🟢 Active" and seconds_ago < 300:
         safe_seconds_ago = max(0, seconds_ago) 
         seconds_left = max(0, 300 - safe_seconds_ago)
-        
-        # FIX: Convert to strict integer 0-100 to prevent Streamlit float exceptions
         progress_val = int(max(0, min(100, (safe_seconds_ago / 300.0) * 100)))
-        
         st.progress(progress_val, text=f"⏳ Next Market Scan in ~{seconds_left}s")
 
 st.divider()
@@ -852,7 +866,8 @@ maint_margin = float(account.get('maintenance_margin', 0)) if account else 0.0
 equity_val = float(account['equity']) if account else 0.0
 margin_util = (maint_margin / equity_val * 100) if equity_val > 0 else 0.0
 
-alerts = generate_tactical_alerts(roll_df, st.session_state.get('global_metrics', {}), margin_util)
+# Pass the ghost_regime to the alerts function
+alerts = generate_tactical_alerts(roll_df, st.session_state.get('global_metrics', {}), margin_util, ghost_regime)
 #alerts.append({"level": "error", "icon": "🧪", "title": "COMMS CHECK", "action": "This is a forced test to verify the Action Center is alive."})
 if alerts:
     st.markdown("### ⚡ Active System Overrides")
@@ -912,6 +927,17 @@ with tab1:
         if avg_market_move > 0.5: st.success("BULLISH")
         elif avg_market_move < -0.5: st.error("BEARISH")
         else: st.warning("NEUTRAL")
+
+    # --- ADDED: GHOST TRAFFIC LIGHTS ---
+    st.markdown("#### 🚦 Ghost Execution Regimes")
+    c_light1, c_light2, _spacer2 = st.columns([2, 2, 6])
+    
+    long_color = "🟢 LIVE" if ghost_regime.get("Long", True) else "🔴 SIMULATION"
+    short_color = "🟢 LIVE" if ghost_regime.get("Short", True) else "🔴 SIMULATION"
+    
+    c_light1.metric("Long Strategy", long_color, f"Ghost MA: {ghost_regime.get('Long_MA', '0.0%')}", delta_color="off")
+    c_light2.metric("Short Strategy", short_color, f"Ghost MA: {ghost_regime.get('Short_MA', '0.0%')}", delta_color="off")
+
 
     # --- UPGRADED: CAPITAL DEPLOYMENT STATES ---
     st.markdown("#### 🔋 Capital Deployment Status")
