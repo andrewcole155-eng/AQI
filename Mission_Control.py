@@ -86,7 +86,7 @@ def read_bot_logs():
 @st.cache_data(ttl=60)
 def get_bot_state():
     """Reads the local JSON state file to extract Ghost Positions and History."""
-    state_path = '/home/andrew/.ssh/Trading/Alpaca_V2/trading_state.json'
+    state_path = '/app/trading_state.json'
     try:
         with open(state_path, 'r') as f:
             return json.load(f)
@@ -863,7 +863,8 @@ if not hist_df_raw.empty and account:
     hist_df_adj = apply_deposit(hist_df_adj, "2026-03-04", 68.84)
     hist_df_adj = apply_deposit(hist_df_adj, "2026-03-13", 69.61)
     hist_df_adj = apply_deposit(hist_df_adj, "2026-03-21", 69.01)     
-    hist_df_adj = apply_deposit(hist_df_adj, "2026-04-09", 69.30)            
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-04-09", 69.30)
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-04-15", 70.20)                      
 
     # Pre-calculate global metrics and rolling edge for the alerts
     st.session_state['global_metrics'] = calculate_advanced_metrics(hist_df_adj)
