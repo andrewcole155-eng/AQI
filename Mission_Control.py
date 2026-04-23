@@ -864,7 +864,8 @@ if not hist_df_raw.empty and account:
     hist_df_adj = apply_deposit(hist_df_adj, "2026-03-13", 69.61)
     hist_df_adj = apply_deposit(hist_df_adj, "2026-03-21", 69.01)     
     hist_df_adj = apply_deposit(hist_df_adj, "2026-04-09", 69.30)
-    hist_df_adj = apply_deposit(hist_df_adj, "2026-04-15", 70.20)                      
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-04-15", 70.20)     
+    hist_df_adj = apply_deposit(hist_df_adj, "2026-04-23", 70.40)                         
 
     # Pre-calculate global metrics and rolling edge for the alerts
     st.session_state['global_metrics'] = calculate_advanced_metrics(hist_df_adj)
